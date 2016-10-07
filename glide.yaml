@@ -33,3 +33,8 @@ import:
   - aws
 - package: github.com/jarcoal/httpmock
 - package: github.com/manucorporat/sse
+- package: github.com/icrowley/fake
+- package: github.com/lazybeaver/entropy
+- package: golang.org/x/crypto
+  subpackages:
+  - scrypt
