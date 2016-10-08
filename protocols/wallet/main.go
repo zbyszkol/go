@@ -3,9 +3,12 @@ package wallet
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"math"
+	"time"
 
 	"crypto/rand"
 
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 	"golang.org/x/crypto/scrypt"
 )
@@ -25,6 +28,24 @@ const (
 	VersionByte = 0x01
 )
 
+// DefaultKdfParams represents the default kdf params to use when deriving the
+// master key.  It presently targets a ~250ms scrypt runtime on a mid 2012
+// 2.7ghz i7 macbook pro.
+var DefaultKdfParams = KdfParams{
+	N:    int(math.Pow(2, 16)),
+	R:    8,
+	P:    1,
+	Bits: 256,
+}
+
+// Client represents a type that can act as the client role in the Wallet
+// protocol. Clients provide authentication information (usernames, passwords,
+// totp codes) used to download and unlock wallets.
+type Client interface {
+	// ReadUsername reads the username that the client wishes to login as.
+	ReadUsername() (string, error)
+}
+
 // KdfParams represents a configuration of the parameters used when deriving the
 // master key from a user's username and password.
 type KdfParams struct {
@@ -37,6 +58,55 @@ type KdfParams struct {
 
 	// Bits is the desired key output length in bits
 	Bits int
+}
+
+type LocalServer struct {
+	DB *db.Repo
+}
+
+// LoginParams represents the login parameters that can be used to finish a
+// login request.  When combined with the password, the master key can be
+// derived for Username.
+type LoginParams struct {
+	Username  string
+	Salt      []byte
+	KdfParams KdfParams
+}
+
+// Protocol is the manager for the wallet protocol.  It implements the various
+// interactions between client and server.
+type Protocol struct {
+	Client Client
+	Server Server
+}
+
+// Server represents a type that conforms to the "server" role in the wallet
+// protocol.  It protects access to a locked wallet, only releasing the wallet
+// data when the client has proved it is access to the wallet.
+type Server interface {
+	GetLoginParams(username string) (*LoginParams, error)
+	GetByWalletID(username string, walletid string) (*Wallet, error)
+}
+
+type Storage interface {
+}
+
+type LockedWallet struct {
+	LockVersion  int
+	MainData     []byte
+	KeychainData []byte
+	UpdatedAt    time.Time
+}
+
+type Wallet struct {
+	Username      string
+	WalletID      []byte
+	Salt          []byte
+	KdfParams     KdfParams
+	PublicKey     string
+	MainData      []byte
+	KeychainData  []byte
+	UsernameProof []byte
 }
 
 // NewS0 returns a new cryptographically random 256-bit byte slice suitable for
@@ -72,6 +142,12 @@ func MasterKeySalt(s0 []byte, username string) []byte {
 	hash := sha256.Sum256(saltBase)
 
 	return hash[:]
+}
+
+// Unlock unlocks the provided locked wallet using the WalletKey derived from
+// the provided master key.
+func Unlock(lw LockedWallet, master []byte) ([]byte, error) {
+	return nil, nil
 }
 
 // WalletID derives a value capable of locating an remote, encrypted wallet
