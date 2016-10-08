@@ -6,6 +6,7 @@
 package http
 
 import (
+	"encoding/json"
 	stdhttp "net/http"
 	"os"
 	"time"
@@ -74,6 +75,40 @@ func Run(conf Config) {
 		conf.OnStopped()
 	}
 	os.Exit(0)
+}
+
+// WriteJSON encoded the provided object to json and uses the result as an http
+// response.
+func WriteJSON(
+	w stdhttp.ResponseWriter,
+	obj interface{},
+	status int,
+) {
+	json, err := json.Marshal(obj)
+
+	if err != nil {
+		WriteError(w, errors.Wrap(err, "response marshal"))
+		return
+	}
+
+	if status == 0 {
+		status = stdhttp.StatusOK
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	w.Write(json)
+}
+
+// WriteError writes the provided error as an http response, after logging the
+// error.
+func WriteError(w stdhttp.ResponseWriter, err error) {
+	log.Error(err)
+	stdhttp.Error(
+		w,
+		"An internal error occurred",
+		stdhttp.StatusInternalServerError,
+	)
 }
 
 // setup is a utility function to configure a new graceful server.  Its main

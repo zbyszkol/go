@@ -1,13 +1,12 @@
 package federation
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/pkg/errors"
 	"github.com/stellar/go/address"
-	"github.com/stellar/go/support/log"
+	strhttp "github.com/stellar/go/support/http"
 )
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -15,7 +14,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 
 	if q == "" {
-		h.writeJSON(w, ErrorResponse{
+		strhttp.WriteJSON(w, ErrorResponse{
 			Code:    "invalid_request",
 			Message: "q parameter is blank",
 		}, http.StatusBadRequest)
@@ -30,7 +29,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "txid":
 		h.failNotImplemented(w, "txid type queries are not supported")
 	default:
-		h.writeJSON(w, ErrorResponse{
+		strhttp.WriteJSON(w, ErrorResponse{
 			Code:    "invalid_request",
 			Message: fmt.Sprintf("invalid type: '%s'", typ),
 		}, http.StatusBadRequest)
@@ -39,14 +38,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) failNotFound(w http.ResponseWriter) {
-	h.writeJSON(w, ErrorResponse{
+	strhttp.WriteJSON(w, ErrorResponse{
 		Code:    "not_found",
 		Message: "Account not found",
 	}, http.StatusNotFound)
 }
 
 func (h *Handler) failNotImplemented(w http.ResponseWriter, msg string) {
-	h.writeJSON(w, ErrorResponse{
+	strhttp.WriteJSON(w, ErrorResponse{
 		Code:    "not_implemented",
 		Message: msg,
 	}, http.StatusNotImplemented)
@@ -64,7 +63,7 @@ func (h *Handler) lookupByID(w http.ResponseWriter, q string) {
 
 	rec, err := rd.LookupReverseRecord(q)
 	if err != nil {
-		h.writeError(w, errors.Wrap(err, "lookup record"))
+		strhttp.WriteError(w, errors.Wrap(err, "lookup record"))
 		return
 	}
 
@@ -73,7 +72,7 @@ func (h *Handler) lookupByID(w http.ResponseWriter, q string) {
 		return
 	}
 
-	h.writeJSON(w, SuccessResponse{
+	strhttp.WriteJSON(w, SuccessResponse{
 		StellarAddress: address.New(rec.Name, rec.Domain),
 		AccountID:      q,
 	}, http.StatusOK)
@@ -82,7 +81,7 @@ func (h *Handler) lookupByID(w http.ResponseWriter, q string) {
 func (h *Handler) lookupByName(w http.ResponseWriter, q string) {
 	name, domain, err := address.Split(q)
 	if err != nil {
-		h.writeJSON(w, ErrorResponse{
+		strhttp.WriteJSON(w, ErrorResponse{
 			Code:    "invalid_query",
 			Message: "Please use an address of the form name*domain.com",
 		}, http.StatusBadRequest)
@@ -91,7 +90,7 @@ func (h *Handler) lookupByName(w http.ResponseWriter, q string) {
 
 	rec, err := h.Driver.LookupRecord(name, domain)
 	if err != nil {
-		h.writeError(w, errors.Wrap(err, "lookup record"))
+		strhttp.WriteError(w, errors.Wrap(err, "lookup record"))
 		return
 	}
 	if rec == nil {
@@ -99,36 +98,10 @@ func (h *Handler) lookupByName(w http.ResponseWriter, q string) {
 		return
 	}
 
-	h.writeJSON(w, SuccessResponse{
+	strhttp.WriteJSON(w, SuccessResponse{
 		StellarAddress: q,
 		AccountID:      rec.AccountID,
 		Memo:           rec.Memo,
 		MemoType:       rec.MemoType,
 	}, http.StatusOK)
-}
-
-func (h *Handler) writeJSON(
-	w http.ResponseWriter,
-	obj interface{},
-	status int,
-) {
-	json, err := json.Marshal(obj)
-
-	if err != nil {
-		h.writeError(w, errors.Wrap(err, "response marshal"))
-		return
-	}
-
-	if status == 0 {
-		status = http.StatusOK
-	}
-
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	w.Write(json)
-}
-
-func (h *Handler) writeError(w http.ResponseWriter, err error) {
-	log.Error(err)
-	http.Error(w, "An internal error occurred", http.StatusInternalServerError)
 }
