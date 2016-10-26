@@ -13,11 +13,11 @@ install:
 - go get -u github.com/Masterminds/glide
 - go get -u gopkg.in/alecthomas/gometalinter.v1
 - go get -u github.com/haya14busa/reviewdog/cmd/reviewdog
-- gometalinter --install
 before_script: 
 script:
 - glide install
 - go test -race $(glide novendor)
+- gometalinter --install
 - >-
   gometalinter $(glide novendor) --deadline=20s --disable-all --enable=golint | reviewdog -f=golint -ci=travis
 before_deploy:
