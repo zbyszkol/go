@@ -8,7 +8,8 @@ imports:
 - name: github.com/ajg/form
   version: cc2954064ec9ea8d93917f0f87456e11d7b881ad
 - name: github.com/asaskevich/govalidator
-  version: fdf19785fd3558d619ef81212f5edf1d6c2a5911
+  version: f0666aa80d7dcf75bd564ae8717b952d74a29d6a
+  repo: https://github.com/stellar/govalidator.git
 - name: github.com/aws/aws-sdk-go
   version: 35c21ff262580265c1d77095d6f712605fd0c3f4
   subpackages:
