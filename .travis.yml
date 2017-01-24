@@ -10,7 +10,7 @@ go:
 env:
 - GO15VENDOREXPERIMENT="1"
 install:
-- go get gopkg.in/Masterminds/glide.v0.12.3
+- go get gopkg.in/Masterminds/glide.v0
 before_script: 
 script:
 - glide install
