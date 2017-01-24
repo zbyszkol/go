@@ -10,7 +10,7 @@ go:
 env:
 - GO15VENDOREXPERIMENT="1"
 install:
-- go get gopkg.in/Masterminds/glide.v0
+- curl https://glide.sh/get | sh
 before_script: 
 script:
 - glide install
