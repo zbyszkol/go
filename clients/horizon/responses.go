@@ -169,3 +169,72 @@ type Transaction struct {
 	ValidAfter      string    `json:"valid_after,omitempty"`
 	ValidBefore     string    `json:"valid_before,omitempty"`
 }
+
+type Effect struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	TypeID      int32  `json:"type_i"`
+	PagingToken string `json:"paging_token"`
+	Account     string `json:"account"`
+
+	Links struct {
+		Operation Link `json:"operation"`
+		Succeeds  Link `json:"succeeds"`
+		Proceeds  Link `json:"precedes"`
+	} `json:"_links"`
+
+	// "account_created",
+	StartingBalance string `json:"starting_balance"`
+
+	// "account_removed",
+
+	// account_credited, account_debited
+	AssetType   string `json:"asset_type"`
+	AssetCode   string `json:"asset_code,omitempty"`
+	AssetIssuer string `json:"asset_issuer,omitempty"`
+	Amount      string `json:"amount"`
+
+	//  "account_thresholds_updated",
+	LowThreshold  int32 `json:"low_threshold"`
+	MedThreshold  int32 `json:"med_threshold"`
+	HighThreshold int32 `json:"high_threshold"`
+
+	//  "account_home_domain_updated",
+	HomeDomain string `json:"home_domain"`
+
+	//     "account_flags_updated",
+	AuthRequired  *bool `json:"auth_required_flag,omitempty"`
+	AuthRevokable *bool `json:"auth_revokable_flag,omitempty"`
+
+	// signer_created, signer_removed, signer_updated
+	Weight    int32  `json:"weight"`
+	PublicKey string `json:"public_key"`
+	Key       string `json:"key"`
+
+	//         "trustline_created, trustline_removed, trustline_updated
+	Limit string `json:"limit"`
+
+	//  trustline_authorized, trustline_deauthorized
+	Trustor string `json:"trustor"`
+
+	//             "offer_created",
+	//             "offer_removed",
+	//              "offer_updated",
+
+	//                     "trade",
+	Seller            string `json:"seller"`
+	OfferID           int64  `json:"offer_id"`
+	SoldAmount        string `json:"sold_amount"`
+	SoldAssetType     string `json:"sold_asset_type"`
+	SoldAssetCode     string `json:"sold_asset_code,omitempty"`
+	SoldAssetIssuer   string `json:"sold_asset_issuer,omitempty"`
+	BoughtAmount      string `json:"bought_amount"`
+	BoughtAssetType   string `json:"bought_asset_type"`
+	BoughtAssetCode   string `json:"bought_asset_code,omitempty"`
+	BoughtAssetIssuer string `json:"bought_asset_issuer,omitempty"`
+
+	//             "data_created",
+	//              "data_removed",
+	//              "data_updated",
+
+}

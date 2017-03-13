@@ -148,6 +148,20 @@ func (c *Client) StreamTransactions(accountID string, cursor *string, handler Tr
 	})
 }
 
+// StreamEffects streams incoming effects
+func (c *Client) StreamEffects(accountID string, cursor *string, handler EffectHandler) (err error) {
+	url := fmt.Sprintf("%s/accounts/%s/effects", c.URL, accountID)
+	return c.stream(url, cursor, func(data []byte) error {
+		var effect Effect
+		err = json.Unmarshal(data, &effect)
+		if err != nil {
+			return errors.Wrap(err, "Error unmarshaling data")
+		}
+		handler(effect)
+		return nil
+	})
+}
+
 // SubmitTransaction submits a transaction to the network. err can be either error object or horizon.Error object.
 func (c *Client) SubmitTransaction(
 	transactionEnvelopeXdr string,
