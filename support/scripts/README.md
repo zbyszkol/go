@@ -4,3 +4,7 @@ This directory contains simple go programs and/or bash scripts that aid in the d
 ## `build_release_artifacts`
 
 This simple go application that travis uses to build our release packages.
+
+## `run_tests` 
+
+Runs all stellar-written tests, enabling the race detector if possible.
