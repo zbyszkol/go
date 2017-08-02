@@ -18,9 +18,15 @@ func Fuzz(data []byte) int {
 	var out bytes.Buffer
 	_, err = xdr.Marshal(&out, txe)
 	if err != nil {
-		fmt.Println("failed to roundtrip")
+		fmt.Println("failed to encode:", err)
 		fmt.Printf("%#v", data)
 		panic(err)
+	}
+
+	if !bytes.Equal(data, out.Bytes()) {
+		fmt.Println("failed to roundtrip")
+		fmt.Printf("%#v", data)
+		panic("failed to roundtrip")
 	}
 
 	return 1
