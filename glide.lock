@@ -1,8 +1,8 @@
-hash: 805bc7accf5266e737482b8bff09ee04c554d404e3daecb1d84e7086277dbe70
-updated: 2016-11-10T15:52:55.78656724-08:00
+hash: 3cde4aebf8de3b38bc18e8f648d23b8649cae8c6a3abef28fd34109ead1444a6
+updated: 2017-08-02T11:06:42.539934448-08:00
 imports:
 - name: github.com/agl/ed25519
-  version: 278e1ec8e8a6e017cd07577924d6766039146ced
+  version: 5312a61534124124185d41f09206b9fef1d88403
   subpackages:
   - edwards25519
 - name: github.com/ajg/form
@@ -11,7 +11,7 @@ imports:
   version: f0666aa80d7dcf75bd564ae8717b952d74a29d6a
   repo: https://github.com/stellar/govalidator.git
 - name: github.com/aws/aws-sdk-go
-  version: d3e3f4281292478e8095bea047e2297e005152da
+  version: ae48d7372b4f879cfe994d7a037a6a822cafdde0
   subpackages:
   - aws
   - aws/awserr
@@ -25,89 +25,85 @@ imports:
   - aws/credentials/stscreds
   - aws/defaults
   - aws/ec2metadata
+  - aws/endpoints
   - aws/request
   - aws/session
   - aws/signer/v4
-  - private/endpoints
+  - internal/shareddefaults
   - private/protocol
   - private/protocol/query
   - private/protocol/query/queryutil
   - private/protocol/rest
   - private/protocol/restxml
   - private/protocol/xml/xmlutil
-  - private/waiter
   - service/s3
   - service/sts
 - name: github.com/BurntSushi/toml
-  version: 99064174e013895bbd9b025c31100bd1d9b590ca
+  version: a368813c5e648fee92e5f6c30e3944ff9d5e8895
+- name: github.com/certifi/gocertifi
+  version: 3fd9e1adb12b72d2f3f82191d49be9b93c69f67c
 - name: github.com/davecgh/go-spew
-  version: 6d212800a42e8ab5c146b8ace3490ee17e5225f9
+  version: 04cdfd42973bb9c8589fd6a731800cf222fde1a9
   subpackages:
   - spew
 - name: github.com/fatih/structs
-  version: dc3312cb1a4513a366c4c9e622ad55c32df12ed3
-- name: github.com/gavv/gojsondiff
-  version: 4e533b0f28d6258fa9153191e70acb312e497243
-  subpackages:
-  - formatter
+  version: 7e5a8eef611ee84dd359503f3969f80df4c50723
 - name: github.com/gavv/monotime
-  version: 259cd7b345f5aa080eff16f21d7866ef7dea9528
+  version: 47d58efa69556a936a3c15eb2ed42706d968ab01
 - name: github.com/getsentry/raven-go
-  version: c9d3cc542ad199f62c0264286be537f9bce6063c
+  version: d175f85701dfbf44cb0510114c9943e665e60907
 - name: github.com/go-ini/ini
-  version: 6e4869b434bd001f6983749881c7ead3545887d8
+  version: 3d73f4b845efdf9989fffd4b4e562727744a34ba
 - name: github.com/go-sql-driver/mysql
-  version: 0b58b37b664c21f3010e836f1b931e1d0b0b0685
+  version: 3955978caca48c1658a4bb7a9c6a0f084e326af3
 - name: github.com/google/go-querystring
-  version: 9235644dd9e52eeae6fa48efd539fdc351a0af53
+  version: 53e6ce116135b80d037921a7fdd5138cf32d7a8a
   subpackages:
   - query
 - name: github.com/howeyc/gopass
-  version: f5387c492211eb133053880d23dfae62aa14123d
+  version: bf9dde6d0d2c004a008c27aaee91170c786f6db8
 - name: github.com/imkira/go-interpol
-  version: b9781c93ae51c8b4fc3af1b1426909721af0a624
+  version: 5accad8134979a6ac504d456a6c7f1c53da237ca
 - name: github.com/inconshreveable/mousetrap
   version: 76626ae9c91c4f2a10f34cad8ce83ea42c93bb75
 - name: github.com/jarcoal/httpmock
-  version: 145b10d659265440f062c31ea15326166bae56ee
+  version: 4442edb3db31196622da56482fd8d0fa375fba4d
 - name: github.com/jmespath/go-jmespath
   version: bd40a432e4c76585ef6b72d3fd96fb9b6dc7b68d
 - name: github.com/jmoiron/sqlx
-  version: 05b81a7d5d38058e42148dc01f17daf4acba4640
+  version: d9bd385d68c068f1fabb5057e3dedcbcbb039d0f
   subpackages:
   - reflectx
 - name: github.com/klauspost/compress
-  version: 08fe86a420401e830c24114bdf9f1ba91331407a
+  version: f3dce52e0576655d55fd69e74b63da96ad1108f3
   subpackages:
   - flate
   - gzip
   - zlib
 - name: github.com/klauspost/cpuid
-  version: 09cded8978dc9e80714c4d85b0322337b0a1e5e0
-- name: github.com/klauspost/crc32
-  version: 19b0b332c9e4516a6370a0456e6182c3b5036720
+  version: ae7887de9fa5d2db4eaa8174a7eff2c1ac00f2da
 - name: github.com/lann/builder
   version: f22ce00fd9394014049dad11c244859432bd6820
 - name: github.com/lann/ps
   version: 62de8c46ede02a7675c4c79c84883eb164cb71e3
 - name: github.com/lib/pq
-  version: 50761b0867bd1d9d069276790bcd4a3bccf2324a
+  version: dd1fe2071026ce53f36a39112e645b4d4f5793a4
   subpackages:
   - oid
 - name: github.com/manucorporat/sse
   version: ee05b128a739a0fb76c7ebd3ae4810c1de808d6d
 - name: github.com/Masterminds/squirrel
-  version: cb03830e33a9c086b3f9051548a81d299e190939
+  version: 20f192218cf52a73397fa2df45bdda720f3e47c8
 - name: github.com/mattn/go-sqlite3
-  version: 4b0af852c17164dce48e6754e3094c55192e4934
+  version: 6654e412c3c7eabb310d920cf73a2102dbf8c632
 - name: github.com/moul/http2curl
-  version: b1479103caacaa39319f75e7f57fc545287fca0d
+  version: 4e24498b31dba4683efb9d35c1c8a91e2eda28c8
 - name: github.com/nullstyle/go-xdr
   version: 3c3a95da20cd1e19018bf098dce9c3ce358848df
   subpackages:
   - xdr3
 - name: github.com/onsi/ginkgo
-  version: c07a44f02cf4a895e331f4f473c0943ee116c668
+  version: 8382b23d18dbaaff8e5f7e83784c53ebb8ec2f47
   subpackages:
   - config
   - extensions/table
@@ -117,6 +113,7 @@ imports:
   - internal/leafnodes
   - internal/remote
   - internal/spec
+  - internal/spec_iterator
   - internal/specrunner
   - internal/suite
   - internal/testingtproxy
@@ -127,7 +124,7 @@ imports:
   - reporters/stenographer/support/go-isatty
   - types
 - name: github.com/onsi/gomega
-  version: ff4bc6b6f9f5affa66635cd04d31d2a7ee21ffd6
+  version: c893efa28eb45626cdaa76c9f653b62488858837
   subpackages:
   - format
   - internal/assertion
@@ -147,85 +144,107 @@ imports:
   subpackages:
   - difflib
 - name: github.com/rs/cors
-  version: a62a804a8a009876ca59105f7899938a1349f4b3
-- name: github.com/rs/xhandler
-  version: ed27b6fd65218132ee50cd95f38474a3d8a2cd12
+  version: eabcc6af4bbe5ad3a949d36450326a2b0b9894b8
 - name: github.com/segmentio/go-loggly
   version: e78f6971ebca5835614673e2f5f6a47ca5f13501
 - name: github.com/sergi/go-diff
-  version: 97b2266dfe4bd4ea1b81a463322f04f8b724801e
+  version: 24e2351369ec4949b2ed0dc5c477afdd4c4034e8
+  repo: https://github.com/sergi/go-diff
   subpackages:
   - diffmatchpatch
 - name: github.com/sirupsen/logrus
-  version: 68cec9f21fbf3ea8d8f98c044bc6ce05f17b267a
-  repo: https://github.com/sirupsen/logrus.git
+  version: 181d419aa9e2223811b824e8f0b4af96f9ba9302
   subpackages:
   - hooks/test
 - name: github.com/spf13/cobra
-  version: 9c28e4bbd74e5c3ed7aacbc552b2cab7cfdfe744
+  version: b26b538f693051ac6518e65672de3144ce3fbedc
 - name: github.com/spf13/pflag
-  version: 4bd69631f4750a9df249ee317f4536e02cbc3c65
+  version: e57e3eeb33f795204c1ca35f56c44f83227c6e66
 - name: github.com/stretchr/objx
   version: cbeaeb16a013161a98496fad62933b1d21786672
 - name: github.com/stretchr/testify
-  version: 976c720a22c8eb4eb6a0b4348ad85ad12491a506
+  version: 05e8a0eda380579888eb53c394909df027f06991
   subpackages:
-  - mock
   - assert
+  - mock
   - require
 - name: github.com/valyala/bytebufferpool
   version: e746df99fe4a3986f4d4f79e13c1e0117ce9c2f7
 - name: github.com/valyala/fasthttp
-  version: 0a7f0a797cd66b89588d0a7fdd670b706579a621
+  version: ae643c872d2c060154a4fb2162dc1c0ab1693ccd
   subpackages:
   - fasthttputil
+  - stackless
 - name: github.com/visionmedia/go-debug
   version: ff4a55a20a86994118644bbddc6a216da193cc13
 - name: github.com/xeipuuv/gojsonpointer
-  version: e0fe6f68307607d540ed8eac07a342c33fa1b54a
+  version: 6fe8760cad3569743d51ddbb243b26f8456742dc
 - name: github.com/xeipuuv/gojsonreference
   version: e02fc20de94c78484cd5ffb007f8af96be030a45
 - name: github.com/xeipuuv/gojsonschema
-  version: 4f624f6197547606054e042e7903db103585e151
+  version: 0c8571ac0ce161a5feb57375a9cdf148c98c0f70
 - name: github.com/y0ssar1an/q
-  version: 2db904a96a52a061170a3c0d8db384d388315af6
+  version: 392ac3089fcf8c70ebbe85f4c29778b7ebe27a9f
 - name: github.com/yalp/jsonpath
   version: 31a79c7593bb93eb10b163650d4a3e6ca190e4dc
 - name: github.com/yudai/gojsondiff
-  version: 7b1b7adf999dab73a6eb02669c3d82dbb27a3dd6
+  version: 081cda2ee95045a2c26da52c2ba80860838549de
+  subpackages:
+  - formatter
 - name: github.com/yudai/golcs
   version: d1c525dea8ce39ea9a783d33cf08932305373f2c
+  repo: https://github.com/yudai/golcs
 - name: goji.io
-  version: e355964ac565b94cf0fc7f218346626529125086
+  version: 0d89ff54b2c18c9c4ba530e32496aef902d3c6cd
   subpackages:
-  - pat
   - internal
+  - pat
   - pattern
 - name: golang.org/x/crypto
-  version: 7682e7e3945130cf3cde089834664f68afdd1523
+  version: 358f15eacb587b056fc93273b930314a5cda12fe
   subpackages:
   - ssh/terminal
 - name: golang.org/x/net
-  version: 9bc2a3340c92c17a20edcd0080e93851ed58f5d5
+  version: f5079bd7f6f74e23c4d65efa0f4ce14cbd6a3c0f
   subpackages:
   - context
+  - html
+  - html/atom
+  - html/charset
   - http2
   - http2/hpack
+  - idna
   - lex/httplex
   - publicsuffix
 - name: golang.org/x/sys
-  version: 1f5e250e1174502017917628cc48b52fdc25b531
+  version: e312636bdaa2fac4f0acde9d17ab9fbad2b4ad10
   subpackages:
   - unix
+- name: golang.org/x/text
+  version: 3bd178b88a8180be2df394a1fbb81313916f0e7b
+  subpackages:
+  - encoding
+  - encoding/charmap
+  - encoding/htmlindex
+  - encoding/internal
+  - encoding/internal/identifier
+  - encoding/japanese
+  - encoding/korean
+  - encoding/simplifiedchinese
+  - encoding/traditionalchinese
+  - encoding/unicode
+  - internal/tag
+  - internal/utf8internal
+  - language
+  - runes
+  - secure/bidirule
+  - transform
+  - unicode/bidi
+  - unicode/norm
 - name: gopkg.in/gavv/httpexpect.v1
-  version: 40724cf1e4a08b670b14a02deff693a91f3aa9a0
+  version: d852bb8255b678d369ba96dc7647bac47e092c96
 - name: gopkg.in/tylerb/graceful.v1
-  version: 50a48b6e73fcc75b45e22c05b79629a67c79e938
+  version: 4654dfbb6ad53cb5e27f37d99b02e16c1872fbbb
 testImports:
-- name: github.com/kr/pretty
-  version: cfb55aafdaf3ec08f0db22699ab822c50091b1c4
-  repo: https://github.com/kr/pretty
-- name: github.com/kr/text
-  version: 7cafcd837844e784b526369c9bce262804aebc60
 - name: gopkg.in/yaml.v2
-  version: a5b47d31c556af34a302ce5d659e6fea44d90de0
+  version: 25c4ec802a7d637f88d584ab26798e94ad14c13b
