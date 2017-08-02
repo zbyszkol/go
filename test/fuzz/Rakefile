@@ -1,0 +1,90 @@
+require 'bundler'
+Bundler.setup()
+require 'pry'
+require 'faraday'
+require 'json'
+require 'fileutils'
+require 'base64'
+
+HORIZON = "https://horizon.stellar.org"
+HTTP = Faraday.new(url: HORIZON) 
+
+desc "tasks for the TransactionEnvelope fuzz test"
+namespace :txenv do
+  task :corpus do
+    txs = load_distinctly_sized_attributes(20) do |tx|
+      Base64.decode64(tx["envelope_xdr"])
+    end
+
+    txs.each do |tx| 
+      write_corpus_file "txenv", txe["id"], Base64.decode64(tx["envelope_xdr"])
+    end
+  end
+end
+
+desc "tasks for the TransactionResult fuzz test"
+namespace :txresult do
+  task :corpus do
+    txs = load_distinctly_sized_attributes(20) do |tx|
+      Base64.decode64(tx["result_xdr"])
+    end
+
+    txs.each do |tx| 
+      write_corpus_file "txresult", tx["id"], Base64.decode64(tx["result_xdr"])
+    end
+  end
+end
+
+
+def get_page(cursor)
+  path = "/transactions?order=desc&limit=200&cursor=#{cursor}"
+  resp = HTTP.get(path)
+
+  unless resp.success?
+    puts "failed to get #{path}"
+    binding.pry
+  end
+
+  parsed = JSON.parse(resp.body)
+  parsed["_embedded"]["records"]
+end
+
+# NOTE: what a terrible name
+def load_distinctly_sized_attributes(limit, &extract)
+  to_load = limit
+  cursor = ""
+  sizes = []
+  result = []
+
+  while to_load > 0
+    txs = get_page cursor
+    break if txs.empty?
+    
+    txs.each do |tx|
+      raw = extract.call tx
+      size = raw.to_s.size
+      cursor = tx["paging_token"]
+      next if sizes.include?(size)
+
+      puts "found #{tx['id']}: #{size}"
+      
+      sizes << raw.size
+      result << tx
+      to_load -= 1      
+    end
+  end
+
+  result
+end
+
+def write_corpus_file(test, id, raw)
+  path = "#{Dir.pwd}/#{test}/corpus/#{id}"
+  FileUtils.mkdir_p(File.dirname(path))
+
+  unless File.exist?(path) 
+    IO.write(path, raw)
+    puts "wrote #{id}: #{raw.size}"
+  else
+    puts "skipped #{id}"
+  end
+end
