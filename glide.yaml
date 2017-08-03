@@ -36,3 +36,5 @@ import:
 - package: github.com/y0ssar1an/q
   version: ^1.0.0
 - package: github.com/Masterminds/squirrel
+- package: github.com/go-chi/chi
+  version: ~3.1.5

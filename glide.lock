@@ -1,5 +1,5 @@
-hash: 805bc7accf5266e737482b8bff09ee04c554d404e3daecb1d84e7086277dbe70
-updated: 2016-11-10T15:52:55.78656724-08:00
+hash: 26c85368bc7413c051a614f01026c5fc1efd1c8af068d74b6c212cabd4185d13
+updated: 2017-08-03T12:17:47.328815818+02:00
 imports:
 - name: github.com/agl/ed25519
   version: 278e1ec8e8a6e017cd07577924d6766039146ced
@@ -46,14 +46,12 @@ imports:
   - spew
 - name: github.com/fatih/structs
   version: dc3312cb1a4513a366c4c9e622ad55c32df12ed3
-- name: github.com/gavv/gojsondiff
-  version: 4e533b0f28d6258fa9153191e70acb312e497243
-  subpackages:
-  - formatter
 - name: github.com/gavv/monotime
   version: 259cd7b345f5aa080eff16f21d7866ef7dea9528
 - name: github.com/getsentry/raven-go
   version: c9d3cc542ad199f62c0264286be537f9bce6063c
+- name: github.com/go-chi/chi
+  version: 25354a53cca531cb2efd3f1d3c565d90ff04d802
 - name: github.com/go-ini/ini
   version: 6e4869b434bd001f6983749881c7ead3545887d8
 - name: github.com/go-sql-driver/mysql
@@ -107,7 +105,7 @@ imports:
   subpackages:
   - xdr3
 - name: github.com/onsi/ginkgo
-  version: c07a44f02cf4a895e331f4f473c0943ee116c668
+  version: 8382b23d18dbaaff8e5f7e83784c53ebb8ec2f47
   subpackages:
   - config
   - extensions/table
@@ -117,6 +115,7 @@ imports:
   - internal/leafnodes
   - internal/remote
   - internal/spec
+  - internal/spec_iterator
   - internal/specrunner
   - internal/suite
   - internal/testingtproxy
@@ -127,7 +126,7 @@ imports:
   - reporters/stenographer/support/go-isatty
   - types
 - name: github.com/onsi/gomega
-  version: ff4bc6b6f9f5affa66635cd04d31d2a7ee21ffd6
+  version: c893efa28eb45626cdaa76c9f653b62488858837
   subpackages:
   - format
   - internal/assertion
@@ -158,7 +157,6 @@ imports:
   - diffmatchpatch
 - name: github.com/sirupsen/logrus
   version: 68cec9f21fbf3ea8d8f98c044bc6ce05f17b267a
-  repo: https://github.com/sirupsen/logrus.git
   subpackages:
   - hooks/test
 - name: github.com/spf13/cobra
@@ -170,8 +168,8 @@ imports:
 - name: github.com/stretchr/testify
   version: 976c720a22c8eb4eb6a0b4348ad85ad12491a506
   subpackages:
-  - mock
   - assert
+  - mock
   - require
 - name: github.com/valyala/bytebufferpool
   version: e746df99fe4a3986f4d4f79e13c1e0117ce9c2f7
@@ -179,6 +177,7 @@ imports:
   version: 0a7f0a797cd66b89588d0a7fdd670b706579a621
   subpackages:
   - fasthttputil
+  - stackless
 - name: github.com/visionmedia/go-debug
   version: ff4a55a20a86994118644bbddc6a216da193cc13
 - name: github.com/xeipuuv/gojsonpointer
@@ -188,18 +187,20 @@ imports:
 - name: github.com/xeipuuv/gojsonschema
   version: 4f624f6197547606054e042e7903db103585e151
 - name: github.com/y0ssar1an/q
-  version: 2db904a96a52a061170a3c0d8db384d388315af6
+  version: 392ac3089fcf8c70ebbe85f4c29778b7ebe27a9f
 - name: github.com/yalp/jsonpath
   version: 31a79c7593bb93eb10b163650d4a3e6ca190e4dc
 - name: github.com/yudai/gojsondiff
   version: 7b1b7adf999dab73a6eb02669c3d82dbb27a3dd6
+  subpackages:
+  - formatter
 - name: github.com/yudai/golcs
   version: d1c525dea8ce39ea9a783d33cf08932305373f2c
 - name: goji.io
   version: e355964ac565b94cf0fc7f218346626529125086
   subpackages:
-  - pat
   - internal
+  - pat
   - pattern
 - name: golang.org/x/crypto
   version: 7682e7e3945130cf3cde089834664f68afdd1523
@@ -209,6 +210,9 @@ imports:
   version: 9bc2a3340c92c17a20edcd0080e93851ed58f5d5
   subpackages:
   - context
+  - html
+  - html/atom
+  - html/charset
   - http2
   - http2/hpack
   - lex/httplex
@@ -222,10 +226,23 @@ imports:
 - name: gopkg.in/tylerb/graceful.v1
   version: 50a48b6e73fcc75b45e22c05b79629a67c79e938
 testImports:
-- name: github.com/kr/pretty
-  version: cfb55aafdaf3ec08f0db22699ab822c50091b1c4
-  repo: https://github.com/kr/pretty
-- name: github.com/kr/text
-  version: 7cafcd837844e784b526369c9bce262804aebc60
+- name: golang.org/x/text
+  version: 3bd178b88a8180be2df394a1fbb81313916f0e7b
+  subpackages:
+  - encoding
+  - encoding/charmap
+  - encoding/htmlindex
+  - encoding/internal
+  - encoding/internal/identifier
+  - encoding/japanese
+  - encoding/korean
+  - encoding/simplifiedchinese
+  - encoding/traditionalchinese
+  - encoding/unicode
+  - internal/tag
+  - internal/utf8internal
+  - language
+  - runes
+  - transform
 - name: gopkg.in/yaml.v2
   version: a5b47d31c556af34a302ce5d659e6fea44d90de0
