@@ -1,9 +1,8 @@
 package sampler
 
 import (
-	// "database/sql"
 	"fmt"
-	// _ "github.com/lib/pq"
+	"github.com/stellar/go/build"
 	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/xdr"
 	"github.com/stellar/horizon/txsub"
@@ -12,31 +11,33 @@ import (
 )
 
 type TxSubmitter interface {
-	Submit(envelope string) (result txsub.SubmissionResult)
+	Submit(envelope build.TransactionEnvelopeBuilder) (result txsub.SubmissionResult, confirm func() txsub.Result)
 }
 
-func NewDefaultSubmitter(h *http.Client, url string) Submitter {
-	return &txsub.submitter{
-		http:    h,
-		coreURL: url,
-	}
+type txSubmitter struct {
+	// stmt        sql.Stmt
+	// db          sql.DB
+	// queryString string
+	core      *core.Q
+	submitter txsub.Submitter
+	context   context.Context
+}
+
+func (submitter *txSubmitter) Submit(envelope build.TransactionEnvelopeBuilder) (result txsub.SubmissionResult, confirm func() txsub.Result) {
+
+}
+
+func NewTxSubmitter(h *http.Client, url string, psqlConnectionString string) TxSubmitter {
+	submitter := txsub.NewDefaultSubmitter(h, url)
+	txConfirmation := newTxConfirmation(psqlConnectionString)
+	return &txSubmitter{core: txConfirmation, submitter: submitter}
 }
 
 // func (sub *submitter) Submit(envelope string) (result txsub.SubmissionResult) {
 // 	submitter.Submit(context.Context.TODO(), envelope)
 // }
 
-type TxConfirmator interface {
-}
-
-type txConfirmation struct {
-	// stmt        sql.Stmt
-	// db          sql.DB
-	// queryString string
-	core *core.Q
-}
-
-func NewTxConfirmation(psqlConnectionString string) TxConfirmator {
+func newTxConfirmation(psqlConnectionString string) *core.Q {
 	session, err := db.Open("postgres", psqlConnectionString)
 
 	if err != nil {
@@ -45,12 +46,12 @@ func NewTxConfirmation(psqlConnectionString string) TxConfirmator {
 
 	session.DB.SetMaxIdleConns(4)
 	session.DB.SetMaxOpenConns(12)
-	return &txConfirmation{core: &core.Q{session}}
+	return &session
 }
 
-func (conf *txConfirmation) ResultByHash(ctx context.Context, hash string) txsub.Result {
-	return conf.core.ResultByHash(ctx, hash)
-}
+// func (conf *txConfirmation) ResultByHash(ctx context.Context, hash string) txsub.Result {
+// 	return conf.core.ResultByHash(ctx, hash)
+// }
 
 func UnmarshalTxMeta(data string) (result xdr.TransactionMeta) {
 	xdr.SafeUnmarshalBase64(data, &result)
