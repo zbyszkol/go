@@ -1,90 +1,105 @@
 package sampler
 
 import (
+	"bytes"
+	"encoding/binary"
+	"github.com/stellar/go/build"
+	"github.com/stellar/go/keypair"
+	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/xdr"
 	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
+type AccountEntry struct {
+	xdr.AccountEntry
+	Keypair SeedProvider
+}
+
+type TrustLineEntry struct {
+	xdr.TrustLineEntry
+	Keypair keypair.Full
+}
+
+type SeedProvider interface {
+	GetSeed() *keypair.Full
+}
+
+type Uint64 uint64
+
+func (seed Uint64) GetSeed() *keypair.Full {
+	var bytesData []byte = make([]byte, 32)
+	binary.LittleEndian.PutUint64(bytesData, seed)
+	return keypair.FromRawSeed(bytesData)
+}
+
+func (full *keypair.Full) GetSeed() *keypair.Full {
+	return full
+}
+
 type Database interface {
-	// SearchAccount(xdr.AccountId) xdr.AccountEntry
-	GetAccountByOrder(int) xdr.AccountEntry
-	AddAccount(xdr.AccountEntry)
-	GetAccountsNumber() int
-	GetTrustLineByOrder(int) xdr.TrustLineEntry
+	GetAccountByOrder(int) AccountEntry
+	AddAccount(AccountEntry) Database
+	GetAccountsCount() int
+	GetTrustLineByOrder(int) TrustLineEntry
 	GetTrustLineCount() int
-	// SearchOfferById(uint64) xdr.OfferEntry
-	// SearchOfferBySellingAsset(xdr.Asset) xdr.OfferEntry
-	// SearchOfferByBuyingAsset(xdr.Asset) xdr.OfferEntry
+	AddTrustLine(TrustLineEntry)
 }
 
-func Test(database Database) {
-	sampler := TransactionsSampler{}
-	for {
-		transactionSize := Size(rand.Int63n(100) + 1)
-		transaction := sampler.Generate(transactionSize)()
-		sendError := sendTransaction("127.0.0.1:11626", &transaction)
-		if sendError != nil {
-			panic("abandon ship!")
-		}
-
+func AddRootAccount(database Database, sequenceProvider SequenceProvider) (Database, error) {
+	rootSeed := "SDHOAMBNLGCE2MV5ZKIVZAQD3VCLGP53P3OBSBI6UN5L5XZI5TKHFQL4"
+	seedBytes, rawErr := strkey.Decode(strkey.VersionByteSeed, rootSeed)
+	if rawErr != nil {
+		return database, rawErr
 	}
-}
-
-func sendTransaction(address string, transaction *xdr.Transaction) error {
-	coreUrl, urlError := url.Parse("http://" + address)
-	if urlError != nil {
-		return urlError
+	fullKP, keyErr := keypair.FromRawSeed(seedBytes)
+	if keyErr != nil {
+		return database, keyErr
 	}
-	coreUrl.Path += "/tx"
-	parameters := url.Values{}
-	txData, txError := xdr.MarshalBase64(transaction)
-	if txError != nil {
-		return txError
+	rootSequenceNumber, seqErr := sequenceProvider.FetchSequenceNumber(fullKP.Address())
+	if seqErr != nil {
+		return database, seqErr
 	}
-	parameters.Add("blob", txData)
-	coreUrl.RawQuery = parameters.Encode()
-	var httpClient = &http.Client{Timeout: time.Second * 5}
-	_, getError := httpClient.Get(coreUrl.RequestURI())
-	if getError != nil {
-		return getError
-	}
-	return nil
+	rootAccount := AccountEntry{Keypair: fullKP, Balance: 1000000000000000000, SeqNum: rootSequenceNumber + 1}
+	return database.AddAccount(rootAccount), nil
 }
 
 type InMemoryDatabase struct {
-	// orderedData map[uint64]xdr.AccountEntry
 	orderedData       []xdr.AccountEntry
 	orderedTrustlines []xdr.TrustLineEntry
-	// map[xdr.PublicKey]AccountEntry
 }
 
 func deleteElement(ix int, data []int) []int {
-	result := data
-	if ix < int(math.Floor(float64(len(data))/float64(2))) {
-		// shift right first part
-		for i := 0; i < ix; i++ {
-			data[i+1] = data[i]
-		}
-		result = data[1:]
-	} else {
-		// shift left second part
-		for i := ix + 1; i < len(data); i++ {
-			data[i-1] = data[i]
-		}
-		result = data[:len(data)-1]
+	for i := 0; i < ix; i++ {
+		data[i+1] = data[i]
 	}
-	return result
+	return data[1:]
+	// var result []int
+	// if ix < int(math.Floor(float64(len(data))/float64(2))) {
+	// 	// shift right first part
+	// 	for i := 0; i < ix; i++ {
+	// 		data[i+1] = data[i]
+	// 	}
+	// 	result = data[1:]
+	// } else {
+	// 	// shift left second part
+	// 	for i := ix + 1; i < len(data); i++ {
+	// 		data[i-1] = data[i]
+	// 	}
+	// 	result = data[:len(data)-1]
+	// }
+	// return result
 }
 
 func (data *InMemoryDatabase) GetAccountByOrder(order int) xdr.AccountEntry {
 	return data.orderedData[order]
 }
 
-func (data *InMemoryDatabase) GetAccountsNumber() int {
+func (data *InMemoryDatabase) GetAccountsCount() int {
 	return len(data.orderedData)
 }
 
@@ -106,14 +121,16 @@ type TransactionGenerator func(Size) xdr.Transaction
 
 type OperationGenerator func(Size, Database) xdr.Operation
 
+type MutatorGenerator func(Size, Database) build.TransactionMutator
+
 type GeneratorsList []struct {
-	Generator func(xdr.AccountEntry) OperationGenerator
+	Generator func(xdr.AccountEntry) MutatorGenerator
 	Bias      uint32
 }
 
 type TransactionsSampler struct {
 	database   Database
-	generators func(xdr.AccountEntry) OperationGenerator
+	generators func(AccountEntry) MutatorGenerator
 }
 
 func CreateTransactionsGenerator() TransactionGenerator {
@@ -129,39 +146,40 @@ func CreateTransactionsGenerator() TransactionGenerator {
 // 	Operations    []Operation `xdrmaxsize:"100"`
 // 	Ext           TransactionExt
 // }
-func (sampler *TransactionsSampler) Generate(size Size) func() xdr.Transaction {
-	return func() xdr.Transaction {
+func (sampler *TransactionsSampler) Generate(size Size) func() (build.TransactionBuilder, AccountEntry) {
+	return func() build.TransactionEnvelopeBuilder {
 		sourceAccount := getRandomAccount(sampler.database)
-		const minimalFee = 100
-		fee := getRandomFee(sourceAccount)
-		var transaction xdr.Transaction
-		transaction.SourceAccount = sourceAccount.AccountId
-		transaction.Fee = xdr.Uint32(fee)
-		transaction.SeqNum = sourceAccount.SeqNum
-		transaction.Operations = make([]xdr.Operation, size)
+		// const minimalFee = 100
+		// fee := getRandomFee(sourceAccount)
+		transaction := build.Transaction(
+			build.SourceAccount{sourceAccount.Keypair.Address()},
+			build.Sequence{sourceAccount.SeqNum},
+			build.TestNetwork,
+		)
 		generator := sampler.generators(sourceAccount)
 		for it := Size(0); it < size; it++ {
-			transaction.Operations[it] = generator(1, sampler.database)
+			operation := generator(1, sampler.database)
+			transaction.Mutate(operation)
 		}
-		return transaction
+		return transaction, sourceAccount
 	}
 }
 
-func getRandomFee(account xdr.AccountEntry) uint32 {
-	return 0
+func getRandomFee(account AccountEntry) uint32 {
+	return 100
 }
 
 func geometric(p float64) int64 {
 	return 4
 }
 
-func getRandomGeneratorWrapper(generatorsList GeneratorsList) func(xdr.AccountEntry) OperationGenerator {
-	return func(sourceAccount xdr.AccountEntry) OperationGenerator {
+func getRandomGeneratorWrapper(generatorsList GeneratorsList) func(xdr.AccountEntry) MutatorGenerator {
+	return func(sourceAccount xdr.AccountEntry) MutatorGenerator {
 		return getRandomGenerator(generatorsList, sourceAccount)
 	}
 }
 
-func getRandomGenerator(generators GeneratorsList, sourceAccount xdr.AccountEntry) OperationGenerator {
+func getRandomGenerator(generators GeneratorsList, sourceAccount xdr.AccountEntry) MutatorGenerator {
 	whole := 100
 	var randomCdf uint32 = uint32(rand.Intn(whole) + 1)
 	var cdf uint32 = 0
@@ -174,82 +192,44 @@ func getRandomGenerator(generators GeneratorsList, sourceAccount xdr.AccountEntr
 	return generators[len(generators)-1].Generator(sourceAccount)
 }
 
-// type SizeMapper func(StructField) Size
-
-// type ValueGenerator func(StructField) interface{}
-
-// func Sample(argType reflect.Type, sizeMapper SizeMapper, valueGenerator ValueGenerator) Generator {
-// 	expressions := buildExpressions(argType, sizeMapper)
-// 	return generate(expressions, argType, size, ValueGenerator)
-// }
-// type OperationBody struct {
-// 	Type                 OperationType
-// 	CreateAccountOp      *CreateAccountOp
-// 	PaymentOp            *PaymentOp
-// 	PathPaymentOp        *PathPaymentOp
-// 	ManageOfferOp        *ManageOfferOp
-// 	CreatePassiveOfferOp *CreatePassiveOfferOp
-// 	SetOptionsOp         *SetOptionsOp
-// 	ChangeTrustOp        *ChangeTrustOp
-// 	AllowTrustOp         *AllowTrustOp
-// 	Destination          *AccountId
-// 	ManageDataOp         *ManageDataOp
-// }
-// type OperationType int32
-
-// const (
-// 	OperationTypeCreateAccount      OperationType = 0
-// 	OperationTypePayment            OperationType = 1
-// 	OperationTypePathPayment        OperationType = 2
-// 	OperationTypeManageOffer        OperationType = 3
-// 	OperationTypeCreatePassiveOffer OperationType = 4
-// 	OperationTypeSetOptions         OperationType = 5
-// 	OperationTypeChangeTrust        OperationType = 6
-// 	OperationTypeAllowTrust         OperationType = 7
-// 	OperationTypeAccountMerge       OperationType = 8
-// 	OperationTypeInflation          OperationType = 9
-// 	OperationTypeManageData         OperationType = 10
-// )
-func getValidCreateAccoutOpOperation(sourceAccount xdr.AccountEntry) OperationGenerator {
-	return func(size Size, database Database) xdr.Operation {
-		accountOp, accountEntry := generateValidCreateAccountOp(sourceAccount)
-		database.AddAccount(accountEntry)
-		body := xdr.OperationBody{Type: xdr.OperationTypeCreateAccount, CreateAccountOp: &accountOp}
-		return xdr.Operation{SourceAccount: &sourceAccount.AccountId, Body: body}
+func getValidCreateAccountMutator(sourceAccount AccountEntry) MutatorGenerator {
+	return func(size Size, database Database) build.TransactionMutator {
+		destinationKeypair := generateRandomKeypair()
+		destination := build.Destination{destinationKeypair.Address()}
+		startingBalance := rand.Int63n(int64(sourceAccount.Balance)) + 1
+		amount := build.NativeAmount{strconv.FormatInt(startingBalance, 10)}
+		return build.CreateAccount(destination, amount)
 	}
 }
 
-func generateNewAccountEntry() xdr.AccountEntry {
-	return xdr.AccountEntry{}
+func generateRandomKeypair() *keypair.Full {
+	keypair, _ := keypair.Random()
+	return keypair
 }
 
-func generateValidCreateAccountOp(sourceAccount xdr.AccountEntry) (xdr.CreateAccountOp, xdr.AccountEntry) {
-	destinationAccount := generateNewAccountEntry()
-	startingBalance := rand.Int63n(int64(sourceAccount.Balance)) + 1
-	destinationAccount.Balance = xdr.Int64(startingBalance)
-	return xdr.CreateAccountOp{Destination: destinationAccount.AccountId, StartingBalance: destinationAccount.Balance}, destinationAccount
-}
-
-// type PaymentOp struct {
-// 	Destination AccountId
-// 	Asset       Asset
-// 	Amount      Int64
-// }
-// type TrustLineEntry struct {
-// 	AccountId AccountId
-// 	Asset     Asset
-// 	Balance   Int64
-// 	Limit     Int64
-// 	Flags     Uint32
-// 	Ext       TrustLineEntryExt
-// }
-func getValidPaymentOpOperation(sourceAccount xdr.AccountEntry) OperationGenerator {
-	return func(size Size, database Database) xdr.Operation {
-		paymentOp := generateValidPaymentOp(sourceAccount, database)
-		body := xdr.OperationBody{Type: xdr.OperationTypePayment, PaymentOp: &paymentOp}
-		return xdr.Operation{SourceAccount: &sourceAccount.AccountId, Body: body}
+func getValidPaymentMutator(sourceAccount AccountEntry) MutatorGenerator {
+	return func(size Size, database Database) build.TransactionMutator {
+		destinationAccount := getRandomAccount(database)
+		trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
+		amount := rand.Int63n(min(int64(trustLine.Balance), int64(destTrustLine.Limit)))
+		amountString := strconv.FormatInt(amount, 10)
+		var paymentMut build.PaymentMutator
+		if trustLine.Asset.Native {
+			paymentMut = build.NativeAmount{amountString}
+		} else {
+			paymentMut = build.CreditAmount{Code: trustLine.Asset.Code, Issuer: trustLine.Asset.Issuer, Amount: amountString}
+		}
+		return build.Payment(build.Destination{destinationAccount.AccountId.Address()}, paymentMut)
 	}
 }
+
+// func getValidPaymentOpOperation(sourceAccount xdr.AccountEntry) OperationGenerator {
+// 	return func(size Size, database Database) xdr.Operation {
+// 		paymentOp := generateValidPaymentOp(sourceAccount, database)
+// 		body := xdr.OperationBody{Type: xdr.OperationTypePayment, PaymentOp: &paymentOp}
+// 		return xdr.Operation{SourceAccount: &sourceAccount.AccountId, Body: body}
+// 	}
+// }
 
 func min(a, b int64) int64 {
 	if a < b {
@@ -258,20 +238,32 @@ func min(a, b int64) int64 {
 	return b
 }
 
-func generateValidPaymentOp(sourceAccount xdr.AccountEntry, database Database) xdr.PaymentOp {
-	destinationAccount := getRandomAccount(database)
-	trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
-	amount := rand.Int63n(min(int64(trustLine.Balance), int64(destTrustLine.Limit)))
-	return xdr.PaymentOp{Destination: destinationAccount.AccountId, Asset: trustLine.Asset, Amount: xdr.Int64(amount)}
+// func generateValidPaymentOp(sourceAccount xdr.AccountEntry, database Database) xdr.PaymentOp {
+// 	destinationAccount := getRandomAccount(database)
+// 	trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
+// 	amount := rand.Int63n(min(int64(trustLine.Balance), int64(destTrustLine.Limit)))
+// 	return xdr.PaymentOp{Destination: destinationAccount.AccountId, Asset: trustLine.Asset, Amount: xdr.Int64(amount)}
+// }
+
+// TODO: now it returns only native assets
+func getRandomTrustLine(sourceAccount, destinationAccount AccountEntry, database Database) (TrustLineEntry, TrustLineEntry) {
+	myTrustLine := TrustLineEntry{
+		AccountId: sourceAccount.AccountId,
+		Asset:     build.NativeAsset(),
+		Balance:   sourceAccount.Balance,
+		Limit:     math.MaxInt64,
+	}
+	destinationTrustline := TrustLineEntry{
+		AccountId: destinationAccount.AccountId,
+		Asset:     build.NativeAsset(),
+		Balance:   destinationAccount.Balance,
+		Limit:     math.MaxInt64,
+	}
+	return myTrustLine, destinationTrustline
 }
 
-func getRandomTrustLine(sourceAccount, destinationAccount xdr.AccountEntry, database Database) (xdr.TrustLineEntry, xdr.TrustLineEntry) {
-	trustLine := xdr.TrustLineEntry{}
-	return trustLine, trustLine
-}
-
-func getRandomAccount(database Database) xdr.AccountEntry {
-	return database.GetAccountByOrder(rand.Intn(database.GetAccountsNumber()))
+func getRandomAccount(database Database) AccountEntry {
+	return database.GetAccountByOrder(rand.Intn(database.GetAccountsCount()))
 }
 
 // type ManageOfferOp struct {
