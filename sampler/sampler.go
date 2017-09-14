@@ -177,7 +177,7 @@ func CreateTransactionsGenerator() TransactionGenerator {
 // 	Data      *DataEntry
 // }
 
-func (sampler *TransactionsSampler) Generate(size Size) (build.TransactionBuilder, PublicToSeedMapper) { // , xdr.TransactionMeta) {
+func (sampler *TransactionsSampler) Generate(size Size) build.TransactionBuilder { // , xdr.TransactionMeta) {
 	sourceAccount := getRandomAccount(sampler.database)
 	transaction := build.Transaction(
 		build.SourceAccount{sourceAccount.Keypair.Address()},
