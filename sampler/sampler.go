@@ -15,14 +15,25 @@ import (
 	"time"
 )
 
+// NOTE: we are storing private keys in AccountId (expects public key)
 type AccountEntry struct {
 	xdr.AccountEntry
+	// seed    uint64
 	Keypair SeedProvider
+}
+
+func (entry *AccountEntry) SetAccountEntry(xdrEntry *xdr.AccountEntry) *AccountEntry {
+	entry.AccountEntry = *xdrEntry
+	return entry
+}
+
+func (entry *AccountEntry) GetAccountEntry() *xdr.AccountEntry {
+	return &entry.AccountEntry
 }
 
 type TrustLineEntry struct {
 	xdr.TrustLineEntry
-	Keypair keypair.Full
+	Keypair SeedProvider
 }
 
 // type TransactionsChanges struct {
@@ -42,7 +53,7 @@ type Uint64 uint64
 func (seed Uint64) GetSeed() *keypair.Full {
 	var bytesData []byte = make([]byte, 32)
 	binary.LittleEndian.PutUint64(bytesData, seed)
-	return keypair.FromRawSeed(bytesData)
+	return fromRawSeed(byteData)
 }
 
 func (full *keypair.Full) GetSeed() *keypair.Full {
@@ -62,11 +73,8 @@ type Database interface {
 
 func AddRootAccount(database Database, sequenceProvider SequenceProvider) (Database, error) {
 	rootSeed := "SDHOAMBNLGCE2MV5ZKIVZAQD3VCLGP53P3OBSBI6UN5L5XZI5TKHFQL4"
-	seedBytes, rawErr := strkey.Decode(strkey.VersionByteSeed, rootSeed)
-	if rawErr != nil {
-		return database, rawErr
-	}
-	fullKP, keyErr := keypair.FromRawSeed(seedBytes)
+	seedBytes := seedStringToBytes(rootSeed)
+	fullKP, keyErr := fromRawSeed(seedBytes)
 	if keyErr != nil {
 		return database, keyErr
 	}
@@ -76,6 +84,10 @@ func AddRootAccount(database Database, sequenceProvider SequenceProvider) (Datab
 	}
 	rootAccount := &AccountEntry{Keypair: fullKP, Balance: 1000000000000000000, SeqNum: rootSequenceNumber + 1}
 	return database.AddAccount(rootAccount), nil
+}
+
+func seedStringToBytes(seed string) []byte {
+	return strkey.MustDecode(strkey.VersionByteSeed, seed)
 }
 
 type InMemoryDatabase struct {
@@ -109,9 +121,19 @@ func (data *InMemoryDatabase) AddTrustLine(trustline *TrustLineEntry) {
 	data.orderedTrustlines.Add(trustline)
 }
 
+func (data *InMemoryDatabase) Map(publicKey [32]byte) SeedProvider {
+	publicKeyString := rawKeyToString(publicKey)
+	data := data.mappedData[publicKeyString]
+	return data.Keypair
+}
+
 type Size uint64
 
-type MutatorGenerator func(Size, Database) (build.TransactionMutator, xdr.OperationMeta)
+type MutatorGenerator func(Size, Database) build.TransactionMutator // , xdr.OperationMeta)
+
+type PublicToSeedMapper interface {
+	Map(publicKey [32]byte) SeedProvider
+}
 
 type generatorsList []struct {
 	generator func(*AccountEntry) MutatorGenerator
@@ -155,7 +177,7 @@ func CreateTransactionsGenerator() TransactionGenerator {
 // 	Data      *DataEntry
 // }
 
-func (sampler *TransactionsSampler) Generate(size Size) (build.TransactionBuilder, xdr.TransactionMeta) {
+func (sampler *TransactionsSampler) Generate(size Size) (build.TransactionBuilder, PublicToSeedMapper) { // , xdr.TransactionMeta) {
 	sourceAccount := getRandomAccount(sampler.database)
 	transaction := build.Transaction(
 		build.SourceAccount{sourceAccount.Keypair.Address()},
@@ -168,6 +190,56 @@ func (sampler *TransactionsSampler) Generate(size Size) (build.TransactionBuilde
 		transaction.Mutate(operation)
 	}
 	return transaction, sourceAccount
+}
+
+func (sampler *TransactionsSampler) ApplyChanges(changes *xdr.TransactionMeta) *TransactionsSampler {
+	applyTransactionChanges(changes, sampler.database, sampler.database)
+	return sampler
+}
+
+func applyTransactionChanges(changes xdr.TransactionMeta, database Database, mapper PublicToSeedMapper) Database {
+	for _, operation := range changes.Operations {
+		for _, change := range operation.Changes {
+			switch change.Type {
+			case xdr.LedgerEntryChangeTypeLedgerEntryCreated:
+				database = handleEntryCreated(change.Created.Data, database)
+			case xdr.LedgerEntryChangeTypeLedgerEntryUpdated:
+				database = handleEntryUpdated(change.Updated.Data, database)
+			case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
+			case xdr.LedgerEntryChangeTypeLedgerEntryState:
+			}
+		}
+	}
+	return database
+}
+
+func handleEntryCreated(data LedgerEntryData, database Database, mapper PublicToSeedMapper) Database {
+	switch data.Type {
+	case xdr.LedgerEntryTypeAccount:
+		accountEntry := &AccountEntry{}
+		accountEntry.SetAccountEntry(data.Account)
+		accountEntry.Keypair = mapper(accountEntry.AccountEntry.AccountId.Ed25519)
+		database = database.AddAccount(accountEntry)
+	case xdr.LedgerEntryTypeTrustline:
+		// TODO
+	}
+	return database
+}
+
+func fromRawSeed(seed [32]byte) *keypair.Full {
+	return keypair.FromRawSeed(seed)
+}
+
+func handleEntryUpdated(data LedgerEntryData, database Database, mapper PublicToSeedMapper) Database {
+	switch data.Type {
+	case xdr.LedgerEntryTypeAccount:
+		seed := mapper(accountEntry.AccountEntry.AccountId.Ed25519)
+		oldAccount := database.GetAccountByAddress(seed)
+		oldAccount.SetAccountEntry(data.Account)
+	case xdr.LedgerEntryTypeTrustline:
+		// TODO
+	}
+	return database
 }
 
 func getRandomGeneratorWrapper(generatorsList generatorsList) func(*AccountEntry) MutatorGenerator {
@@ -193,29 +265,56 @@ func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) 
 
 func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(size Size, database Database) build.TransactionMutator {
-		destinationKeypair := generateRandomKeypair()
-		destination := build.Destination{destinationKeypair.Address()}
+		destinationKeypair := getNextKeypair() // generateRandomKeypair()
+		destination := build.Destination{destinationKeypair.GetSeed().Address()}
 		startingBalance := rand.Int63n(int64(sourceAccount.Balance)) + 1
 		amount := build.NativeAmount{strconv.FormatInt(startingBalance, 10)}
 
-		var createData xdr.LedgerEntryData
-		createdData.Type = xdr.LedgerEntryTypeAccount
-		createdData.Account = &xdr.AccountEntry{}
-		var createdChange xdr.LedgerEntryChange
-		createdChange.Type = xdr.LedgerEntryChangeTypeLedgerEntryCreated
-		createdChange.Created = xdr.LedgerEntry{Data: createdData}
+		// TODO forget about validation?
+		// rawSeed := fullKeypairToRawBytes(destinationKeypair)
+		// destAccountId := xdr.AccountId(xdr.PublicKey{Type: xdr.PublicKeyTypePublicKeyTypeEd25519, Ed25519: rawSeed})
+		// var createData xdr.LedgerEntryData
+		// createdData.Type = xdr.LedgerEntryTypeAccount
+		// createdData.Account = &xdr.AccountEntry{AccountId: destAccountId, Balance: startingBalance}
+		// var createdChange xdr.LedgerEntryChange
+		// createdChange.Type = xdr.LedgerEntryChangeTypeLedgerEntryCreated
+		// createdChange.Created = xdr.LedgerEntry{Data: createdData}
 
-		var updatedChange xdr.LedgerEntryChange
-		changes := xdr.LedgerEntryChanges([]LedgerEntryChange{createdChange, updatedChange})
-		opMeta := xdr.OperationMeta{Changes: changes}
+		// sourceAccount.Balance -= startingBalance + fee
+		// var updatedData xdr.LedgerEntryData
+		// updatedData.Type = xdr.LedgerEntryTypeAccount
+		// updatedData.Account = sourceAccount.AccountEntry
+		// var updatedChange xdr.LedgerEntryChange
+		// updatedChange.Type = xdr.LedgerEntryChangeTypeLedgerEntryUpdated
+		// updatedChange.Updated = xdr.LedgerEntry{Data: updatedData}
+		// changes := xdr.LedgerEntryChanges([]LedgerEntryChange{createdChange, updatedChange})
+		// opMeta := xdr.OperationMeta{Changes: changes}
 
-		return build.CreateAccount(destination, amount), opMeta
+		// TODO add stub to database
+		database.AddAccount(&AccountEntry{Keypair: destinationKeypair})
+
+		return build.CreateAccount(destination, amount) // , opMeta
 	}
+}
+
+var privateKeyIndex uint64 = 0
+
+func getNextKeypair() SeedProvider {
+	privateKeyIndex++
+	return privateKeyIndex
 }
 
 func generateRandomKeypair() *keypair.Full {
 	keypair, _ := keypair.Random()
 	return keypair
+}
+
+func fullKeypairToRawBytes(full *keypair.Full) [32]byte {
+	return strkey.MustDecode(strkey.VersionByteSeed, full.Seed())
+}
+
+func rawKeyToString(key [32]byte) string {
+	return strkey.MustEncode(strkey.VersionByteSeed, key)
 }
 
 func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
