@@ -25,6 +25,14 @@ type TrustLineEntry struct {
 	Keypair keypair.Full
 }
 
+// type TransactionsChanges struct {
+// 	OperationChanges []OperationChange
+// }
+
+// type OperationChange struct {
+
+// }
+
 type SeedProvider interface {
 	GetSeed() *keypair.Full
 }
@@ -42,12 +50,14 @@ func (full *keypair.Full) GetSeed() *keypair.Full {
 }
 
 type Database interface {
-	GetAccountByOrder(int) AccountEntry
-	AddAccount(AccountEntry) Database
+	GetAccountByOrder(int) *AccountEntry
+	GetAccountByAddress(keypair.KP) *AccountEntry
+	AddAccount(*AccountEntry) *Database
 	GetAccountsCount() int
-	GetTrustLineByOrder(int) TrustLineEntry
+	GetTrustLineByOrder(int) *TrustLineEntry
+	// GetTrustLineById(accountAddress keypair.KP, issuer keypair.KP, assetcode string) *TrustLineEntry
 	GetTrustLineCount() int
-	AddTrustLine(TrustLineEntry)
+	AddTrustLine(*TrustLineEntry) *Database
 }
 
 func AddRootAccount(database Database, sequenceProvider SequenceProvider) (Database, error) {
@@ -64,141 +74,142 @@ func AddRootAccount(database Database, sequenceProvider SequenceProvider) (Datab
 	if seqErr != nil {
 		return database, seqErr
 	}
-	rootAccount := AccountEntry{Keypair: fullKP, Balance: 1000000000000000000, SeqNum: rootSequenceNumber + 1}
+	rootAccount := &AccountEntry{Keypair: fullKP, Balance: 1000000000000000000, SeqNum: rootSequenceNumber + 1}
 	return database.AddAccount(rootAccount), nil
 }
 
 type InMemoryDatabase struct {
-	orderedData       []xdr.AccountEntry
-	orderedTrustlines []xdr.TrustLineEntry
+	orderedData       *CircularBuffer
+	mappedData        map[string]*AccountEntry
+	orderedTrustlines *CircularBuffer
+	// mappedTrustlines  map[string]*TrustLineEntry
 }
 
-func deleteElement(ix int, data []int) []int {
-	for i := 0; i < ix; i++ {
-		data[i+1] = data[i]
-	}
-	return data[1:]
-	// var result []int
-	// if ix < int(math.Floor(float64(len(data))/float64(2))) {
-	// 	// shift right first part
-	// 	for i := 0; i < ix; i++ {
-	// 		data[i+1] = data[i]
-	// 	}
-	// 	result = data[1:]
-	// } else {
-	// 	// shift left second part
-	// 	for i := ix + 1; i < len(data); i++ {
-	// 		data[i-1] = data[i]
-	// 	}
-	// 	result = data[:len(data)-1]
-	// }
-	// return result
-}
-
-func (data *InMemoryDatabase) GetAccountByOrder(order int) xdr.AccountEntry {
-	return data.orderedData[order]
+func (data *InMemoryDatabase) GetAccountByOrder(order int) *AccountEntry {
+	return data.orderedData.Get(order).(*AccountEntry)
 }
 
 func (data *InMemoryDatabase) GetAccountsCount() int {
-	return len(data.orderedData)
+	return data.orderedData.Count()
 }
 
-func (data *InMemoryDatabase) AddAccount(account xdr.AccountEntry) {
-	data.orderedData = append(data.orderedData, account)
+func (data *InMemoryDatabase) AddAccount(account *AccountEntry) {
+	data.orderedData.Add(account)
 }
 
-func (data *InMemoryDatabase) GetTrustLineByOrder(ix int) xdr.TrustLineEntry {
-	return data.orderedTrustlines[ix]
+func (data *InMemoryDatabase) GetTrustLineByOrder(ix int) *TrustLineEntry {
+	return data.orderedTrustlines.Get(ix).(*TrustLineEntry)
 }
 
 func (data *InMemoryDatabase) GetTrustLineCount() int {
-	return len(data.orderedTrustlines)
+	return data.orderedTrustlines.Count()
+}
+
+func (data *InMemoryDatabase) AddTrustLine(trustline *TrustLineEntry) {
+	data.orderedTrustlines.Add(trustline)
 }
 
 type Size uint64
 
-type TransactionGenerator func(Size) xdr.Transaction
+type MutatorGenerator func(Size, Database) (build.TransactionMutator, xdr.OperationMeta)
 
-type OperationGenerator func(Size, Database) xdr.Operation
-
-type MutatorGenerator func(Size, Database) build.TransactionMutator
-
-type GeneratorsList []struct {
-	Generator func(xdr.AccountEntry) MutatorGenerator
-	Bias      uint32
+type generatorsList []struct {
+	generator func(*AccountEntry) MutatorGenerator
+	bias      uint32
 }
 
 type TransactionsSampler struct {
 	database   Database
-	generators func(AccountEntry) MutatorGenerator
+	generators func(*AccountEntry) MutatorGenerator
 }
 
 func CreateTransactionsGenerator() TransactionGenerator {
 	return nil
 }
 
-// type Transaction struct {
-// 	SourceAccount AccountId
-// 	Fee           Uint32
-// 	SeqNum        SequenceNumber
-// 	TimeBounds    *TimeBounds
-// 	Memo          Memo
-// 	Operations    []Operation `xdrmaxsize:"100"`
-// 	Ext           TransactionExt
+// type TransactionMeta struct {
+// 	V          int32
+// 	Operations *[]OperationMeta
 // }
-func (sampler *TransactionsSampler) Generate(size Size) func() (build.TransactionBuilder, AccountEntry) {
-	return func() build.TransactionEnvelopeBuilder {
-		sourceAccount := getRandomAccount(sampler.database)
-		// const minimalFee = 100
-		// fee := getRandomFee(sourceAccount)
-		transaction := build.Transaction(
-			build.SourceAccount{sourceAccount.Keypair.Address()},
-			build.Sequence{sourceAccount.SeqNum},
-			build.TestNetwork,
-		)
-		generator := sampler.generators(sourceAccount)
-		for it := Size(0); it < size; it++ {
-			operation := generator(1, sampler.database)
-			transaction.Mutate(operation)
-		}
-		return transaction, sourceAccount
+// type OperationMeta struct {
+// 	Changes LedgerEntryChanges
+// }
+// type LedgerEntryChanges []LedgerEntryChange
+// type LedgerEntryChange struct {
+// 	Type    LedgerEntryChangeType
+// 	Created *LedgerEntry
+// 	Updated *LedgerEntry
+// 	Removed *LedgerKey
+// 	State   *LedgerEntry
+// }
+// type LedgerEntry struct {
+// 	LastModifiedLedgerSeq Uint32
+// 	Data                  LedgerEntryData
+// 	Ext                   LedgerEntryExt
+// }
+// type LedgerEntryData struct {
+// 	Type      LedgerEntryType
+// 	Account   *AccountEntry
+// 	TrustLine *TrustLineEntry
+// 	Offer     *OfferEntry
+// 	Data      *DataEntry
+// }
+
+func (sampler *TransactionsSampler) Generate(size Size) (build.TransactionBuilder, xdr.TransactionMeta) {
+	sourceAccount := getRandomAccount(sampler.database)
+	transaction := build.Transaction(
+		build.SourceAccount{sourceAccount.Keypair.Address()},
+		build.Sequence{sourceAccount.SeqNum + 1},
+		build.TestNetwork,
+	)
+	generator := sampler.generators(sourceAccount)
+	for it := Size(0); it < size; it++ {
+		operation := generator(1, sampler.database)
+		transaction.Mutate(operation)
 	}
+	return transaction, sourceAccount
 }
 
-func getRandomFee(account AccountEntry) uint32 {
-	return 100
-}
-
-func geometric(p float64) int64 {
-	return 4
-}
-
-func getRandomGeneratorWrapper(generatorsList GeneratorsList) func(xdr.AccountEntry) MutatorGenerator {
-	return func(sourceAccount xdr.AccountEntry) MutatorGenerator {
+func getRandomGeneratorWrapper(generatorsList generatorsList) func(*AccountEntry) MutatorGenerator {
+	return func(sourceAccount *AccountEntry) MutatorGenerator {
 		return getRandomGenerator(generatorsList, sourceAccount)
 	}
 }
 
-func getRandomGenerator(generators GeneratorsList, sourceAccount xdr.AccountEntry) MutatorGenerator {
+func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) MutatorGenerator {
+	var result MutatorGenerator
 	whole := 100
 	var randomCdf uint32 = uint32(rand.Intn(whole) + 1)
 	var cdf uint32 = 0
 	for _, value := range generators {
-		cdf += value.Bias
+		cdf += value.bias
 		if cdf >= randomCdf {
-			return value.Generator(sourceAccount)
+			result = value.generator(sourceAccount)
+			break
 		}
 	}
-	return generators[len(generators)-1].Generator(sourceAccount)
+	return result
 }
 
-func getValidCreateAccountMutator(sourceAccount AccountEntry) MutatorGenerator {
+func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(size Size, database Database) build.TransactionMutator {
 		destinationKeypair := generateRandomKeypair()
 		destination := build.Destination{destinationKeypair.Address()}
 		startingBalance := rand.Int63n(int64(sourceAccount.Balance)) + 1
 		amount := build.NativeAmount{strconv.FormatInt(startingBalance, 10)}
-		return build.CreateAccount(destination, amount)
+
+		var createData xdr.LedgerEntryData
+		createdData.Type = xdr.LedgerEntryTypeAccount
+		createdData.Account = &xdr.AccountEntry{}
+		var createdChange xdr.LedgerEntryChange
+		createdChange.Type = xdr.LedgerEntryChangeTypeLedgerEntryCreated
+		createdChange.Created = xdr.LedgerEntry{Data: createdData}
+
+		var updatedChange xdr.LedgerEntryChange
+		changes := xdr.LedgerEntryChanges([]LedgerEntryChange{createdChange, updatedChange})
+		opMeta := xdr.OperationMeta{Changes: changes}
+
+		return build.CreateAccount(destination, amount), opMeta
 	}
 }
 
@@ -207,7 +218,7 @@ func generateRandomKeypair() *keypair.Full {
 	return keypair
 }
 
-func getValidPaymentMutator(sourceAccount AccountEntry) MutatorGenerator {
+func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(size Size, database Database) build.TransactionMutator {
 		destinationAccount := getRandomAccount(database)
 		trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
@@ -223,14 +234,6 @@ func getValidPaymentMutator(sourceAccount AccountEntry) MutatorGenerator {
 	}
 }
 
-// func getValidPaymentOpOperation(sourceAccount xdr.AccountEntry) OperationGenerator {
-// 	return func(size Size, database Database) xdr.Operation {
-// 		paymentOp := generateValidPaymentOp(sourceAccount, database)
-// 		body := xdr.OperationBody{Type: xdr.OperationTypePayment, PaymentOp: &paymentOp}
-// 		return xdr.Operation{SourceAccount: &sourceAccount.AccountId, Body: body}
-// 	}
-// }
-
 func min(a, b int64) int64 {
 	if a < b {
 		return a
@@ -238,123 +241,23 @@ func min(a, b int64) int64 {
 	return b
 }
 
-// func generateValidPaymentOp(sourceAccount xdr.AccountEntry, database Database) xdr.PaymentOp {
-// 	destinationAccount := getRandomAccount(database)
-// 	trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
-// 	amount := rand.Int63n(min(int64(trustLine.Balance), int64(destTrustLine.Limit)))
-// 	return xdr.PaymentOp{Destination: destinationAccount.AccountId, Asset: trustLine.Asset, Amount: xdr.Int64(amount)}
-// }
-
 // TODO: now it returns only native assets
-func getRandomTrustLine(sourceAccount, destinationAccount AccountEntry, database Database) (TrustLineEntry, TrustLineEntry) {
-	myTrustLine := TrustLineEntry{
+func getRandomTrustLine(sourceAccount, destinationAccount *AccountEntry, database Database) (*TrustLineEntry, *TrustLineEntry) {
+	myTrustLine := &TrustLineEntry{
 		AccountId: sourceAccount.AccountId,
 		Asset:     build.NativeAsset(),
 		Balance:   sourceAccount.Balance,
 		Limit:     math.MaxInt64,
 	}
-	destinationTrustline := TrustLineEntry{
+	destinationTrustline := &TrustLineEntry{
 		AccountId: destinationAccount.AccountId,
 		Asset:     build.NativeAsset(),
 		Balance:   destinationAccount.Balance,
 		Limit:     math.MaxInt64,
 	}
-	return myTrustLine, destinationTrustline
+	return &myTrustLine, &destinationTrustline
 }
 
-func getRandomAccount(database Database) AccountEntry {
+func getRandomAccount(database Database) *AccountEntry {
 	return database.GetAccountByOrder(rand.Intn(database.GetAccountsCount()))
 }
-
-// type ManageOfferOp struct {
-// 	Selling Asset
-// 	Buying  Asset
-// 	Amount  Int64
-// 	Price   Price
-// 	OfferId Uint64
-// }
-// type Price struct {
-// 	N Int32
-// 	D Int32
-// }
-// func getValidCreateOfferOpOperation(sourceAccount xdr.AccountEntry) OperationGenerator {
-// 	return func(size Size, database Database) xdr.Operation {
-// 		createOffer := generateValidCreateManagerOfferOp(sourceAccount, database)
-// 		body := xdr.OperationBody{Type: xdr.OperationTypeManageOffer, ManageOfferOp: &createOffer}
-// 		return xdr.Operation{SourceAccount: &sourceAccount.AccountId, Body: body}
-// 	}
-// }
-
-// func generateValidCreateManagerOfferOp(sourceAccount xdr.AccountEntry, database Database) xdr.ManageOfferOp {
-// 	consumable := rand.Intn(2) == 0
-// 	var sellingAsset, buyingAsset xdr.Asset
-// 	var maxAmount xdr.Int64
-// 	var price xdr.Price
-
-// 	if consumable {
-// 		sellingAsset, buyingAsset, maxAmount, price = getRandomConsumableAssets(sourceAccount)
-// 	} else {
-// 		sellingAsset, buyingAsset, maxAmount, price = getRandomAssets(sourceAccount)
-// 	}
-// 	amount := rand.Intn(maxAmount) + 1
-// 	const NewOfferId xdr.Uint64 = 0
-// 	return xdr.ManageOfferOp{Selling: sellingAsset, Buying: buyingAsset, Amount: amount, Price: price, OfferId: NewOfferId}
-// }
-
-// type AllowTrustOp struct {
-// 	Trustor   AccountId
-// 	Asset     AllowTrustOpAsset
-// 	Authorize bool
-// }
-// type ChangeTrustOp struct {
-// 	Line  Asset
-// 	Limit Int64
-// }
-// TODO add option for biased data generation
-// func getValidChangeTrustOpOperation(sourceAccount xdr.AccountEntry) OperationGenerator {
-// 	return func(size Size, database Database) xdr.Operation {
-// 		changeTrust := generateValidChangeTrustOp(sourceAccount, database)
-// 		body := xdr.OperationBody{Type: xdr.OperationTypeManageOffer, ChangeTrustOp: &changeTrust}
-// 		return xdr.Operation{SourceAccount: &sourceAccount.AccountId, Body: body}
-// 	}
-// }
-
-// func generateValidChangeTrustOp(sourceAccount xdr.AccountEntry, database Database) xdr.ChangeTrustOp {
-// 	trustLine := getRandomAsset(database)
-// 	limit := xdr.Int64(rand.Int63())
-// 	return xdr.ChangeTrustOp{Line: trustLine, Limit: limit}
-// }
-
-// func getRandomAsset(database Database) xdr.Asset {
-
-// }
-
-// var parentStageKeypair = indexToKeypair([argv.sourceIndex])
-// sourceAccount.pubKey = parentStageKeypair.publicKey();
-// sourceAccount.secret = parentStageKeypair.secret();
-
-// TODO keep in-memory database of created accounts and offers. Randomly remove elements from it to keep size.
-
-// Type                 OperationType
-// CreateAccountOp      *CreateAccountOp
-// PaymentOp            *PaymentOp
-// PathPaymentOp        *PathPaymentOp
-// ManageOfferOp        *ManageOfferOp
-// CreatePassiveOfferOp *CreatePassiveOfferOp
-// SetOptionsOp         *SetOptionsOp
-// ChangeTrustOp        *ChangeTrustOp
-// AllowTrustOp         *AllowTrustOp
-// Destination          *AccountId
-// ManageDataOp         *ManageDataOp
-
-// CREATE_ACCOUNT = 0,
-// PAYMENT = 1,
-// PATH_PAYMENT = 2,
-// MANAGE_OFFER = 3,
-// CREATE_PASSIVE_OFFER = 4,
-// SET_OPTIONS = 5,
-// CHANGE_TRUST = 6,
-// ALLOW_TRUST = 7,
-// ACCOUNT_MERGE = 8,
-// INFLATION = 9,
-// MANAGE_DATA = 10
