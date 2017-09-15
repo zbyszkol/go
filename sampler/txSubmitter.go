@@ -18,11 +18,11 @@ type SequenceNumberFetcher interface {
 	FetchSequenceNumber(address keypair.KP) build.Sequence
 }
 
-type sequenceProvider struct {
+type SequenceProvider struct {
 	txsub.SequenceProvider
 }
 
-func (provider sequenceProvider) FetchSequenceNumber(address keypair.KP) build.Sequence {
+func (provider *SequenceProvider) FetchSequenceNumber(address keypair.KP) build.Sequence {
 	addressString := address.Address()
 	return build.Sequence(provider.SequenceProvider.Get([]string{addressString})[addressString])
 }

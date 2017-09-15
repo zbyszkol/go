@@ -1,7 +1,6 @@
 package sampler
 
 import (
-	"bytes"
 	"encoding/binary"
 	"github.com/stellar/go/build"
 	"github.com/stellar/go/keypair"
@@ -9,16 +8,11 @@ import (
 	"github.com/stellar/go/xdr"
 	"math"
 	"math/rand"
-	"net/http"
-	"net/url"
 	"strconv"
-	"time"
 )
 
-// NOTE: we are storing private keys in AccountId (expects public key)
 type AccountEntry struct {
 	xdr.AccountEntry
-	// seed    uint64
 	Keypair SeedProvider
 }
 
@@ -36,14 +30,6 @@ type TrustLineEntry struct {
 	Keypair SeedProvider
 }
 
-// type TransactionsChanges struct {
-// 	OperationChanges []OperationChange
-// }
-
-// type OperationChange struct {
-
-// }
-
 type SeedProvider interface {
 	GetSeed() *keypair.Full
 }
@@ -56,7 +42,9 @@ func (seed Uint64) GetSeed() *keypair.Full {
 	return fromRawSeed(byteData)
 }
 
-func (full *keypair.Full) GetSeed() *keypair.Full {
+type Full keypair.Full
+
+func (full *Full) GetSeed() *keypair.Full {
 	return full
 }
 
@@ -97,6 +85,11 @@ type InMemoryDatabase struct {
 	// mappedTrustlines  map[string]*TrustLineEntry
 }
 
+func NewInMemoryDatabase() Database {
+	dataMap := make(map[string]*AccountEntry)
+	return &InMemoryDatabase{orderedData: &circularBuffer.NewCircularBuffer(1000), mappedData: dataMap}
+}
+
 func (data *InMemoryDatabase) GetAccountByOrder(order int) *AccountEntry {
 	return data.orderedData.Get(order).(*AccountEntry)
 }
@@ -106,7 +99,11 @@ func (data *InMemoryDatabase) GetAccountsCount() int {
 }
 
 func (data *InMemoryDatabase) AddAccount(account *AccountEntry) {
-	data.orderedData.Add(account)
+	_, removed, wasRemoved := data.orderedData.Add(account)
+	if wasRemoved {
+		removedAccount = removed.(*AccountEntry)
+		delete(data.mappedData, removedAccount.Keypair.GetSeed().Address())
+	}
 }
 
 func (data *InMemoryDatabase) GetTrustLineByOrder(ix int) *TrustLineEntry {
@@ -129,55 +126,35 @@ func (data *InMemoryDatabase) Map(publicKey [32]byte) SeedProvider {
 
 type Size uint64
 
-type MutatorGenerator func(Size, Database) build.TransactionMutator // , xdr.OperationMeta)
+type TransactionGenerator func(Size) (build.TransactionBuilder, AccountEntry)
+
+type MutatorGenerator func(Size, Database) build.TransactionMutator
 
 type PublicToSeedMapper interface {
 	Map(publicKey [32]byte) SeedProvider
 }
 
-type generatorsList []struct {
+type generatorsListEntry struct {
 	generator func(*AccountEntry) MutatorGenerator
 	bias      uint32
 }
+
+type generatorsList []generatorsListEntry
 
 type TransactionsSampler struct {
 	database   Database
 	generators func(*AccountEntry) MutatorGenerator
 }
 
-func CreateTransactionsGenerator() TransactionGenerator {
-	return nil
+func NewTransactionGenerator() TransactionGenerator {
+	accountGenerator := generatorsListEntry{generator: getValidCreateAccountMutator, bias: 50}
+	paymentGenerator := generatorsListEntry{generator: getValidPaymentMutator, bias: 50}
+	generatorsList := []generatorsListEntry{accountGenerator, paymentGenerator}
+	inMemoryDatabase := NewInMemoryDatabase()
+	return &TransactionsSampler{database: inMemoryDatabase, generators: getRandomGeneratorWrapper(generatorsList)}
 }
 
-// type TransactionMeta struct {
-// 	V          int32
-// 	Operations *[]OperationMeta
-// }
-// type OperationMeta struct {
-// 	Changes LedgerEntryChanges
-// }
-// type LedgerEntryChanges []LedgerEntryChange
-// type LedgerEntryChange struct {
-// 	Type    LedgerEntryChangeType
-// 	Created *LedgerEntry
-// 	Updated *LedgerEntry
-// 	Removed *LedgerKey
-// 	State   *LedgerEntry
-// }
-// type LedgerEntry struct {
-// 	LastModifiedLedgerSeq Uint32
-// 	Data                  LedgerEntryData
-// 	Ext                   LedgerEntryExt
-// }
-// type LedgerEntryData struct {
-// 	Type      LedgerEntryType
-// 	Account   *AccountEntry
-// 	TrustLine *TrustLineEntry
-// 	Offer     *OfferEntry
-// 	Data      *DataEntry
-// }
-
-func (sampler *TransactionsSampler) Generate(size Size) build.TransactionBuilder { // , xdr.TransactionMeta) {
+func (sampler *TransactionsSampler) Generate(size Size) (build.TransactionBuilder, AccountEntry) {
 	sourceAccount := getRandomAccount(sampler.database)
 	transaction := build.Transaction(
 		build.SourceAccount{sourceAccount.Keypair.Address()},
@@ -193,11 +170,11 @@ func (sampler *TransactionsSampler) Generate(size Size) build.TransactionBuilder
 }
 
 func (sampler *TransactionsSampler) ApplyChanges(changes *xdr.TransactionMeta) *TransactionsSampler {
-	applyTransactionChanges(changes, sampler.database, sampler.database)
+	applyTransactionChanges(changes, sampler.database)
 	return sampler
 }
 
-func applyTransactionChanges(changes xdr.TransactionMeta, database Database, mapper PublicToSeedMapper) Database {
+func applyTransactionChanges(changes *xdr.TransactionMeta, database Database) Database {
 	for _, operation := range changes.Operations {
 		for _, change := range operation.Changes {
 			switch change.Type {
@@ -213,13 +190,12 @@ func applyTransactionChanges(changes xdr.TransactionMeta, database Database, map
 	return database
 }
 
-func handleEntryCreated(data LedgerEntryData, database Database, mapper PublicToSeedMapper) Database {
+func handleEntryCreated(data LedgerEntryData, database Database) Database {
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
-		accountEntry := &AccountEntry{}
+		publicKey := rawKeyToString(accountEntry.AccountEntry.AccountId.Ed25519)
+		accountEntry := database.GetAccountByAddress(publicKey)
 		accountEntry.SetAccountEntry(data.Account)
-		accountEntry.Keypair = mapper(accountEntry.AccountEntry.AccountId.Ed25519)
-		database = database.AddAccount(accountEntry)
 	case xdr.LedgerEntryTypeTrustline:
 		// TODO
 	}
@@ -230,12 +206,12 @@ func fromRawSeed(seed [32]byte) *keypair.Full {
 	return keypair.FromRawSeed(seed)
 }
 
-func handleEntryUpdated(data LedgerEntryData, database Database, mapper PublicToSeedMapper) Database {
+func handleEntryUpdated(data LedgerEntryData, database Database) Database {
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
-		seed := mapper(accountEntry.AccountEntry.AccountId.Ed25519)
-		oldAccount := database.GetAccountByAddress(seed)
-		oldAccount.SetAccountEntry(data.Account)
+		publicKey := rawKeyToString(accountEntry.AccountEntry.AccountId.Ed25519)
+		accountEntry := database.GetAccountByAddress(publicKey)
+		accountEntry.SetAccountEntry(data.Account)
 	case xdr.LedgerEntryTypeTrustline:
 		// TODO
 	}
