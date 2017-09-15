@@ -5,6 +5,7 @@ import (
 	"github.com/stellar/go/build"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/strkey"
+	"github.com/stellar/go/utils/circularBuffer"
 	"github.com/stellar/go/xdr"
 	"math"
 	"math/rand"
@@ -31,63 +32,69 @@ type TrustLineEntry struct {
 }
 
 type SeedProvider interface {
-	GetSeed() *keypair.Full
+	GetSeed() *Full
 }
 
 type Uint64 uint64
 
-func (seed Uint64) GetSeed() *keypair.Full {
-	var bytesData []byte = make([]byte, 32)
-	binary.LittleEndian.PutUint64(bytesData, seed)
-	return fromRawSeed(byteData)
+func (seed Uint64) GetSeed() *Full {
+	var bytesData [32]byte
+	binary.LittleEndian.PutUint64(bytesData[:], uint64(seed))
+	result := Full(*fromRawSeed(bytesData))
+	return &result
 }
 
-type Full keypair.Full
+type Full struct{ keypair.Full }
 
-func (full *Full) GetSeed() *keypair.Full {
+func (full *Full) GetSeed() *Full {
 	return full
 }
 
 type Database interface {
 	GetAccountByOrder(int) *AccountEntry
-	GetAccountByAddress(keypair.KP) *AccountEntry
-	AddAccount(*AccountEntry) *Database
+	GetAccountByAddress(string) *AccountEntry
+	AddAccount(*AccountEntry) Database
 	GetAccountsCount() int
 	GetTrustLineByOrder(int) *TrustLineEntry
 	// GetTrustLineById(accountAddress keypair.KP, issuer keypair.KP, assetcode string) *TrustLineEntry
 	GetTrustLineCount() int
-	AddTrustLine(*TrustLineEntry) *Database
+	AddTrustLine(*TrustLineEntry)
 }
 
 func AddRootAccount(database Database, sequenceProvider SequenceProvider) (Database, error) {
 	rootSeed := "SDHOAMBNLGCE2MV5ZKIVZAQD3VCLGP53P3OBSBI6UN5L5XZI5TKHFQL4"
 	seedBytes := seedStringToBytes(rootSeed)
-	fullKP, keyErr := fromRawSeed(seedBytes)
-	if keyErr != nil {
-		return database, keyErr
-	}
+	fullKP := fromRawSeed(seedBytes)
 	rootSequenceNumber, seqErr := sequenceProvider.FetchSequenceNumber(fullKP.Address())
 	if seqErr != nil {
 		return database, seqErr
 	}
-	rootAccount := &AccountEntry{Keypair: fullKP, Balance: 1000000000000000000, SeqNum: rootSequenceNumber + 1}
+	rootAccount := &AccountEntry{Keypair: fullKP}
+	rootAccount.Balance = 1000000000000000000
+	rootAccount.SeqNum = rootSequenceNumber + 1
 	return database.AddAccount(rootAccount), nil
 }
 
-func seedStringToBytes(seed string) []byte {
-	return strkey.MustDecode(strkey.VersionByteSeed, seed)
+func seedStringToBytes(seed string) [32]byte {
+	return sliceToFixedArray(strkey.MustDecode(strkey.VersionByteSeed, seed))
+}
+
+func sliceToFixedArray(data []byte) [32]byte {
+	var resultArray [32]byte
+	copy(resultArray[:], data)
+	return resultArray
 }
 
 type InMemoryDatabase struct {
-	orderedData       *CircularBuffer
+	orderedData       *circularBuffer.CircularBuffer
 	mappedData        map[string]*AccountEntry
-	orderedTrustlines *CircularBuffer
+	orderedTrustlines *circularBuffer.CircularBuffer
 	// mappedTrustlines  map[string]*TrustLineEntry
 }
 
 func NewInMemoryDatabase() Database {
 	dataMap := make(map[string]*AccountEntry)
-	return &InMemoryDatabase{orderedData: &circularBuffer.NewCircularBuffer(1000), mappedData: dataMap}
+	return &InMemoryDatabase{orderedData: circularBuffer.NewCircularBuffer(1000), mappedData: dataMap}
 }
 
 func (data *InMemoryDatabase) GetAccountByOrder(order int) *AccountEntry {
@@ -98,12 +105,14 @@ func (data *InMemoryDatabase) GetAccountsCount() int {
 	return data.orderedData.Count()
 }
 
-func (data *InMemoryDatabase) AddAccount(account *AccountEntry) {
+func (data *InMemoryDatabase) AddAccount(account *AccountEntry) Database {
 	_, removed, wasRemoved := data.orderedData.Add(account)
+	data.mappedData[account.Keypair.GetSeed().Address()] = account
 	if wasRemoved {
-		removedAccount = removed.(*AccountEntry)
+		removedAccount := removed.(*AccountEntry)
 		delete(data.mappedData, removedAccount.Keypair.GetSeed().Address())
 	}
+	return data
 }
 
 func (data *InMemoryDatabase) GetTrustLineByOrder(ix int) *TrustLineEntry {
@@ -118,21 +127,15 @@ func (data *InMemoryDatabase) AddTrustLine(trustline *TrustLineEntry) {
 	data.orderedTrustlines.Add(trustline)
 }
 
-func (data *InMemoryDatabase) Map(publicKey [32]byte) SeedProvider {
-	publicKeyString := rawKeyToString(publicKey)
-	data := data.mappedData[publicKeyString]
-	return data.Keypair
+func (data *InMemoryDatabase) GetAccountByAddress(address string) *AccountEntry {
+	return data.mappedData[address]
 }
 
 type Size uint64
 
-type TransactionGenerator func(Size) (build.TransactionBuilder, AccountEntry)
+type TransactionGenerator func(Size) (*build.TransactionBuilder, *AccountEntry)
 
 type MutatorGenerator func(Size, Database) build.TransactionMutator
-
-type PublicToSeedMapper interface {
-	Map(publicKey [32]byte) SeedProvider
-}
 
 type generatorsListEntry struct {
 	generator func(*AccountEntry) MutatorGenerator
@@ -151,14 +154,17 @@ func NewTransactionGenerator() TransactionGenerator {
 	paymentGenerator := generatorsListEntry{generator: getValidPaymentMutator, bias: 50}
 	generatorsList := []generatorsListEntry{accountGenerator, paymentGenerator}
 	inMemoryDatabase := NewInMemoryDatabase()
-	return &TransactionsSampler{database: inMemoryDatabase, generators: getRandomGeneratorWrapper(generatorsList)}
+	sampler := &TransactionsSampler{database: inMemoryDatabase, generators: getRandomGeneratorWrapper(generatorsList)}
+	return func(size Size) (*build.TransactionBuilder, *AccountEntry) {
+		return sampler.Generate(size)
+	}
 }
 
-func (sampler *TransactionsSampler) Generate(size Size) (build.TransactionBuilder, AccountEntry) {
+func (sampler *TransactionsSampler) Generate(size Size) (*build.TransactionBuilder, *AccountEntry) {
 	sourceAccount := getRandomAccount(sampler.database)
 	transaction := build.Transaction(
-		build.SourceAccount{sourceAccount.Keypair.Address()},
-		build.Sequence{sourceAccount.SeqNum + 1},
+		build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
+		build.Sequence{uint64(sourceAccount.SeqNum + 1)},
 		build.TestNetwork,
 	)
 	generator := sampler.generators(sourceAccount)
@@ -175,7 +181,7 @@ func (sampler *TransactionsSampler) ApplyChanges(changes *xdr.TransactionMeta) *
 }
 
 func applyTransactionChanges(changes *xdr.TransactionMeta, database Database) Database {
-	for _, operation := range changes.Operations {
+	for _, operation := range *changes.Operations {
 		for _, change := range operation.Changes {
 			switch change.Type {
 			case xdr.LedgerEntryChangeTypeLedgerEntryCreated:
@@ -190,10 +196,10 @@ func applyTransactionChanges(changes *xdr.TransactionMeta, database Database) Da
 	return database
 }
 
-func handleEntryCreated(data LedgerEntryData, database Database) Database {
+func handleEntryCreated(data xdr.LedgerEntryData, database Database) Database {
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
-		publicKey := rawKeyToString(accountEntry.AccountEntry.AccountId.Ed25519)
+		publicKey := rawKeyToString(*data.Account.AccountId.Ed25519)
 		accountEntry := database.GetAccountByAddress(publicKey)
 		accountEntry.SetAccountEntry(data.Account)
 	case xdr.LedgerEntryTypeTrustline:
@@ -202,14 +208,15 @@ func handleEntryCreated(data LedgerEntryData, database Database) Database {
 	return database
 }
 
-func fromRawSeed(seed [32]byte) *keypair.Full {
-	return keypair.FromRawSeed(seed)
+func fromRawSeed(seed [32]byte) *Full {
+	result, _ := keypair.FromRawSeed(seed)
+	return &Full{*result}
 }
 
-func handleEntryUpdated(data LedgerEntryData, database Database) Database {
+func handleEntryUpdated(data xdr.LedgerEntryData, database Database) Database {
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
-		publicKey := rawKeyToString(accountEntry.AccountEntry.AccountId.Ed25519)
+		publicKey := rawKeyToString(*data.Account.AccountId.Ed25519)
 		accountEntry := database.GetAccountByAddress(publicKey)
 		accountEntry.SetAccountEntry(data.Account)
 	case xdr.LedgerEntryTypeTrustline:
@@ -277,7 +284,7 @@ var privateKeyIndex uint64 = 0
 
 func getNextKeypair() SeedProvider {
 	privateKeyIndex++
-	return privateKeyIndex
+	return Uint64(privateKeyIndex)
 }
 
 func generateRandomKeypair() *keypair.Full {
@@ -286,11 +293,15 @@ func generateRandomKeypair() *keypair.Full {
 }
 
 func fullKeypairToRawBytes(full *keypair.Full) [32]byte {
-	return strkey.MustDecode(strkey.VersionByteSeed, full.Seed())
+	return sliceToFixedArray(strkey.MustDecode(strkey.VersionByteSeed, full.Seed()))
 }
 
 func rawKeyToString(key [32]byte) string {
-	return strkey.MustEncode(strkey.VersionByteSeed, key)
+	return strkey.MustEncode(strkey.VersionByteSeed, key[:])
+}
+
+func bytesToString(data []byte) string {
+	return strkey.MustEncode(strkey.VersionByteSeed, data)
 }
 
 func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
@@ -300,10 +311,19 @@ func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
 		amount := rand.Int63n(min(int64(trustLine.Balance), int64(destTrustLine.Limit)))
 		amountString := strconv.FormatInt(amount, 10)
 		var paymentMut build.PaymentMutator
-		if trustLine.Asset.Native {
+		if trustLine.Asset.Type == xdr.AssetTypeAssetTypeNative {
 			paymentMut = build.NativeAmount{amountString}
 		} else {
-			paymentMut = build.CreditAmount{Code: trustLine.Asset.Code, Issuer: trustLine.Asset.Issuer, Amount: amountString}
+			asset := trustLine.Asset
+			var code, issuer string
+			if asset.Type == xdr.AssetTypeAssetTypeCreditAlphanum4 {
+				code = bytesToString(asset.AlphaNum4.AssetCode[:])
+				issuer = rawKeyToString(*asset.AlphaNum4.Issuer.Ed25519)
+			} else if asset.Type == xdr.AssetTypeAssetTypeCreditAlphanum12 {
+				code = bytesToString(asset.AlphaNum4.AssetCode[:])
+				issuer = rawKeyToString(*asset.AlphaNum4.Issuer.Ed25519)
+			}
+			paymentMut = build.CreditAmount{Code: code, Issuer: issuer, Amount: amountString}
 		}
 		return build.Payment(build.Destination{destinationAccount.AccountId.Address()}, paymentMut)
 	}
@@ -318,19 +338,18 @@ func min(a, b int64) int64 {
 
 // TODO: now it returns only native assets
 func getRandomTrustLine(sourceAccount, destinationAccount *AccountEntry, database Database) (*TrustLineEntry, *TrustLineEntry) {
-	myTrustLine := &TrustLineEntry{
-		AccountId: sourceAccount.AccountId,
-		Asset:     build.NativeAsset(),
-		Balance:   sourceAccount.Balance,
-		Limit:     math.MaxInt64,
-	}
-	destinationTrustline := &TrustLineEntry{
-		AccountId: destinationAccount.AccountId,
-		Asset:     build.NativeAsset(),
-		Balance:   destinationAccount.Balance,
-		Limit:     math.MaxInt64,
-	}
-	return &myTrustLine, &destinationTrustline
+	myTrustLine := &TrustLineEntry{}
+	myTrustLine.AccountId = sourceAccount.AccountId
+	myTrustLine.Asset.Type = xdr.AssetTypeAssetTypeNative
+	myTrustLine.Balance = sourceAccount.Balance
+	myTrustLine.Limit = math.MaxInt64
+
+	destinationTrustline := &TrustLineEntry{}
+	destinationTrustline.AccountId = destinationAccount.AccountId
+	destinationTrustline.Asset.Type = xdr.AssetTypeAssetTypeNative
+	destinationTrustline.Balance = destinationAccount.Balance
+	destinationTrustline.Limit = math.MaxInt64
+	return myTrustLine, destinationTrustline
 }
 
 func getRandomAccount(database Database) *AccountEntry {
