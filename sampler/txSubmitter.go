@@ -1,17 +1,18 @@
 package sampler
 
 import (
-	"fmt"
 	"github.com/stellar/go/build"
+	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/xdr"
+	"github.com/stellar/horizon/db2/core"
 	"github.com/stellar/horizon/txsub"
 	"golang.org/x/net/context"
-	"time"
+	"net/http"
 )
 
 type TxSubmitter interface {
-	Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *txsub.Result)
+	Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Account)
 }
 
 type SequenceNumberFetcher interface {
@@ -24,27 +25,50 @@ type SequenceProvider struct {
 
 func (provider *SequenceProvider) FetchSequenceNumber(address keypair.KP) build.Sequence {
 	addressString := address.Address()
-	return build.Sequence(provider.SequenceProvider.Get([]string{addressString})[addressString])
+	results, _ := provider.SequenceProvider.Get([]string{addressString})
+	return build.Sequence{results[addressString]}
 }
 
 type txSubmitter struct {
 	core      *core.Q
 	submitter txsub.Submitter
-	context   *context.Context
+	context   context.Context
 }
 
-func (submitter *txSubmitter) Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *txsub.Result) {
-	txHash := txBuilder.HashHex()
-	envelope := txBuilder.Sign(signers).Base64()
-	result := submitter.submitter.Submit(submitter.context, envelope)
-	var resultFetcher func() *txsub.Result
+// func (submitter *txSubmitter) Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *txsub.Result) {
+// 	txHash, _ := txBuilder.HashHex()
+// 	envelope := txBuilder.Sign(signers...)
+// 	envelopeString, _ := envelope.Base64()
+// 	result := submitter.submitter.Submit(submitter.context, envelopeString)
+// 	var resultFetcher func() *txsub.Result
+// 	if result.Err != nil {
+// 		resultFetcher = func() *txsub.Result {
+// 			return nil
+// 		}
+// 	} else {
+// 		resultFetcher = func() *txsub.Result {
+// 			return &submitter.core.ResultByHash(submitter.context, txHash)
+// 		}
+// 	}
+// 	return result, resultFetcher
+// }
+
+func (submitter *txSubmitter) Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Account) {
+	txHash, _ := txBuilder.HashHex()
+	envelope := txBuilder.Sign(signers...)
+	envelopeString, _ := envelope.Base64()
+	result := submitter.submitter.Submit(submitter.context, envelopeString)
+	var resultFetcher func() *core.Account
 	if result.Err != nil {
-		resultFetcher = func() {
+		resultFetcher = func() *core.Account {
 			return nil
 		}
 	} else {
-		resultFetcher = func() {
-			return &submitter.core.ResultByHash(submitter.context, txHash)
+		resultFetcher = func() *core.Account {
+			var resultAccount core.Account
+			address := RawKeyToString(*txBuilder.TX.SourceAccount.Ed25519)
+			submitter.core.AccountByAddress(resultAccount, address)
+			return &resultAccount
 		}
 	}
 	return result, resultFetcher
@@ -65,11 +89,12 @@ func newTxConfirmation(psqlConnectionString string) *core.Q {
 
 	session.DB.SetMaxIdleConns(4)
 	session.DB.SetMaxOpenConns(12)
-	return &session
+	return session
 }
 
-func GetTxMeta(result *txsub.Result) (result xdr.TransactionMeta) {
-	xdr.SafeUnmarshalBase64(result.ResultMetaXDR, &result)
+func GetTxMeta(txResult *txsub.Result) (result xdr.TransactionMeta) {
+	xdr.SafeUnmarshalBase64(txResult.ResultMetaXDR, &result)
+	return
 }
 
 // func (conf *txConfirmation) ResultByHash(ctx context.Context, hash string) txsub.Result {
