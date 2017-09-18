@@ -12,7 +12,7 @@ import (
 )
 
 type TxSubmitter interface {
-	Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Account)
+	Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Transaction)
 }
 
 type SequenceNumberFetcher interface {
@@ -35,40 +35,21 @@ type txSubmitter struct {
 	context   context.Context
 }
 
-// func (submitter *txSubmitter) Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *txsub.Result) {
-// 	txHash, _ := txBuilder.HashHex()
-// 	envelope := txBuilder.Sign(signers...)
-// 	envelopeString, _ := envelope.Base64()
-// 	result := submitter.submitter.Submit(submitter.context, envelopeString)
-// 	var resultFetcher func() *txsub.Result
-// 	if result.Err != nil {
-// 		resultFetcher = func() *txsub.Result {
-// 			return nil
-// 		}
-// 	} else {
-// 		resultFetcher = func() *txsub.Result {
-// 			return &submitter.core.ResultByHash(submitter.context, txHash)
-// 		}
-// 	}
-// 	return result, resultFetcher
-// }
-
-func (submitter *txSubmitter) Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Account) {
+func (submitter *txSubmitter) Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Transaction) {
 	txHash, _ := txBuilder.HashHex()
 	envelope := txBuilder.Sign(signers...)
 	envelopeString, _ := envelope.Base64()
 	result := submitter.submitter.Submit(submitter.context, envelopeString)
-	var resultFetcher func() *core.Account
+	var resultFetcher func() *core.Transaction
 	if result.Err != nil {
-		resultFetcher = func() *core.Account {
+		resultFetcher = func() *core.Transaction {
 			return nil
 		}
 	} else {
-		resultFetcher = func() *core.Account {
-			var resultAccount core.Account
-			address := RawKeyToString(*txBuilder.TX.SourceAccount.Ed25519)
-			submitter.core.AccountByAddress(resultAccount, address)
-			return &resultAccount
+		resultFetcher = func() *core.Transaction {
+			var result core.Transaction
+			submitter.core.TransactionByHash(&result, txHash)
+			return &result
 		}
 	}
 	return result, resultFetcher
@@ -89,12 +70,7 @@ func newTxConfirmation(psqlConnectionString string) *core.Q {
 
 	session.DB.SetMaxIdleConns(4)
 	session.DB.SetMaxOpenConns(12)
-	return session
-}
-
-func GetTxMeta(txResult *txsub.Result) (result xdr.TransactionMeta) {
-	xdr.SafeUnmarshalBase64(txResult.ResultMetaXDR, &result)
-	return
+	return &core.Q{session}
 }
 
 // func (conf *txConfirmation) ResultByHash(ctx context.Context, hash string) txsub.Result {

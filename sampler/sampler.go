@@ -167,7 +167,7 @@ type Size uint64
 
 type TransactionGenerator func(Size, Database) *build.TransactionBuilder
 
-type MutatorGenerator func(*AccountEntry, Size, Database) build.TransactionMutator
+type MutatorGenerator func(Size, Database) build.TransactionMutator
 
 type generatorsListEntry struct {
 	generator func(*AccountEntry) MutatorGenerator
@@ -306,13 +306,10 @@ func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator 
 		// opMeta := xdr.OperationMeta{Changes: changes}
 
 		// TODO add stub to database
-
-		return build.CreateAccount(destination, amount),
-			func(dataB Database) Database {
-				dataB.AddAccount(&AccountEntry{Keypair: destinationKeypair, Balance: startingBalance})
-				return dataB
-			}
-
+		newAccount := &AccountEntry{Keypair: destinationKeypair}
+		newAccount.Balance = xdr.Int64(startingBalance)
+		database.AddAccount(newAccount)
+		return build.CreateAccount(destination, amount)
 	}
 }
 
