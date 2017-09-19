@@ -165,7 +165,7 @@ func (data *InMemoryDatabase) GetAccountByAddress(address string) *AccountEntry 
 
 type Size uint64
 
-type TransactionGenerator func(Size, Database) *build.TransactionBuilder
+type TransactionGenerator func(Size, Database) (*build.TransactionBuilder, *AccountEntry)
 
 type MutatorGenerator func(Size, Database) build.TransactionMutator
 
@@ -177,7 +177,6 @@ type generatorsListEntry struct {
 type generatorsList []generatorsListEntry
 
 type TransactionsSampler struct {
-	database   Database
 	generators func(*AccountEntry) MutatorGenerator
 }
 
@@ -185,15 +184,14 @@ func NewTransactionGenerator() TransactionGenerator {
 	accountGenerator := generatorsListEntry{generator: getValidCreateAccountMutator, bias: 50}
 	paymentGenerator := generatorsListEntry{generator: getValidPaymentMutator, bias: 50}
 	generatorsList := []generatorsListEntry{accountGenerator, paymentGenerator}
-	inMemoryDatabase := NewInMemoryDatabase()
-	sampler := &TransactionsSampler{database: inMemoryDatabase, generators: getRandomGeneratorWrapper(generatorsList)}
-	return func(size Size, database Database) *build.TransactionBuilder {
-		return sampler.Generate(size)
+	sampler := &TransactionsSampler{generators: getRandomGeneratorWrapper(generatorsList)}
+	return func(size Size, database Database) (*build.TransactionBuilder, *AccountEntry) {
+		return sampler.Generate(size, database)
 	}
 }
 
-func (sampler *TransactionsSampler) Generate(size Size) *build.TransactionBuilder {
-	sourceAccount := getRandomAccount(sampler.database)
+func (sampler *TransactionsSampler) Generate(size Size, database Database) (*build.TransactionBuilder, *AccountEntry) {
+	sourceAccount := getRandomAccount(database)
 	transaction := build.Transaction(
 		build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
 		build.Sequence{uint64(sourceAccount.SeqNum + 1)},
@@ -201,18 +199,13 @@ func (sampler *TransactionsSampler) Generate(size Size) *build.TransactionBuilde
 	)
 	generator := sampler.generators(sourceAccount)
 	for it := Size(0); it < size; it++ {
-		operation := generator(1, sampler.database)
+		operation := generator(1, database)
 		transaction.Mutate(operation)
 	}
-	return transaction
+	return transaction, sourceAccount
 }
 
-func (sampler *TransactionsSampler) ApplyChanges(changes *xdr.TransactionMeta) *TransactionsSampler {
-	applyTransactionChanges(changes, sampler.database)
-	return sampler
-}
-
-func applyTransactionChanges(changes *xdr.TransactionMeta, database Database) Database {
+func ApplyChanges(changes *xdr.TransactionMeta, database Database) Database {
 	for _, operation := range *changes.Operations {
 		for _, change := range operation.Changes {
 			switch change.Type {

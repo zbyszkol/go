@@ -12,7 +12,7 @@ import (
 )
 
 type TxSubmitter interface {
-	Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Transaction)
+	Submit(sourceAccount *AccountEntry, txBuilder *build.TransactionBuilder) (txsub.SubmissionResult, func() (*build.Sequence, error), func() (*core.Transaction, error))
 }
 
 type SequenceNumberFetcher interface {
@@ -30,38 +30,63 @@ func (provider *SequenceProvider) FetchSequenceNumber(address keypair.KP) build.
 }
 
 type txSubmitter struct {
-	core      *core.Q
-	submitter txsub.Submitter
-	context   context.Context
+	core             *core.Q
+	submitter        txsub.Submitter
+	context          context.Context
+	sequenceProvider SequenceNumberFetcher
 }
 
-func (submitter *txSubmitter) Submit(txBuilder *build.TransactionBuilder, signers ...string) (txsub.SubmissionResult, func() *core.Transaction) {
+func (submitter *txSubmitter) Submit(sourceAccount *AccountEntry, txBuilder *build.TransactionBuilder) (txsub.SubmissionResult, func() (*build.Sequence, error), func() (*core.Transaction, error)) {
 	txHash, _ := txBuilder.HashHex()
-	envelope := txBuilder.Sign(signers...)
+	envelope := txBuilder.Sign(sourceAccount.Keypair.GetSeed().Seed())
 	envelopeString, _ := envelope.Base64()
 	result := submitter.submitter.Submit(submitter.context, envelopeString)
-	var resultFetcher func() *core.Transaction
+	var sequenceFetcher func() (*build.Sequence, error)
+	var resultFetcher func() (*core.Transaction, error)
 	if result.Err != nil {
-		resultFetcher = func() *core.Transaction {
-			return nil
+		sequenceFetcher = func() (*build.Sequence, error) {
+			return nil, nil
+		}
+		resultFetcher = func() (*core.Transaction, error) {
+			return nil, nil
 		}
 	} else {
-		resultFetcher = func() *core.Transaction {
-			var result core.Transaction
-			submitter.core.TransactionByHash(&result, txHash)
-			return &result
-		}
+		sequenceFetcher = waitForNewSequenceNumber(submitter.sequenceProvider, sourceAccount)
+		resultFetcher = waitForTransactionResult(submitter.core, txHash)
 	}
-	return result, resultFetcher
+	return result, sequenceFetcher, resultFetcher
+}
+
+func waitForTransactionResult(coreQ *core.Q, txHash string) func() (*core.Transaction, error) {
+	return func() (*core.Transaction, error) {
+		var result core.Transaction
+		coreQ.TransactionByHash(&result, txHash)
+		return &result, nil
+	}
+}
+
+func waitForNewSequenceNumber(sequenceProvider SequenceNumberFetcher, account *AccountEntry) func() (*build.Sequence, error) {
+	accountSeqNum := account.SeqNum
+	return func() (*build.Sequence, error) {
+		sequence := accountSeqNum
+		for sequence == accountSeqNum {
+			if sequence < accountSeqNum {
+				panic("Wrong sequence number: value smaller than current")
+			}
+			sequence = xdr.SequenceNumber(sequenceProvider.FetchSequenceNumber(account.Keypair.GetSeed()).Sequence)
+		}
+		return &build.Sequence{uint64(sequence)}, nil
+	}
 }
 
 func NewTxSubmitter(h *http.Client, url string, psqlConnectionString string) TxSubmitter {
 	submitter := txsub.NewDefaultSubmitter(h, url)
-	txConfirmation := newTxConfirmation(psqlConnectionString)
-	return &txSubmitter{core: txConfirmation, submitter: submitter}
+	coreDb := newDbSession(psqlConnectionString)
+	seqProvider := &SequenceProvider{coreDb.SequenceProvider()}
+	return &txSubmitter{core: coreDb, submitter: submitter, sequenceProvider: seqProvider}
 }
 
-func newTxConfirmation(psqlConnectionString string) *core.Q {
+func newDbSession(psqlConnectionString string) *core.Q {
 	session, err := db.Open("postgres", psqlConnectionString)
 
 	if err != nil {
