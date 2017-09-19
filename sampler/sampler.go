@@ -64,14 +64,21 @@ type Database interface {
 	AddTrustLine(*TrustLineEntry)
 }
 
-func AddRootAccount(database Database, sequenceProvider SequenceProvider) (Database, error) {
+func AddRootAccount(database Database, accountFetcher AccountFetcher, sequenceProvider SequenceNumberFetcher) (Database, error) {
 	rootSeed := "SDHOAMBNLGCE2MV5ZKIVZAQD3VCLGP53P3OBSBI6UN5L5XZI5TKHFQL4"
-	seedBytes := seedStringToBytes(rootSeed)
-	fullKP := fromRawSeed(seedBytes)
-	rootSequenceNumber := sequenceProvider.FetchSequenceNumber(fullKP)
+	fullKP := fromRawSeed(seedStringToBytes(rootSeed))
+	coreAccount, fetchError := accountFetcher.FetchAccount(fullKP)
+	if fetchError != nil {
+		return database, fetchError
+		// errors.New("error while fetching the sequence number for the root account: ")
+	}
+	rootSequenceNumber, seqError := sequenceProvider.FetchSequenceNumber(fullKP)
+	if seqError != nil {
+		return database, seqError
+	}
 	rootAccount := &AccountEntry{Keypair: fullKP}
-	rootAccount.Balance = 1000000000000000000
-	rootAccount.SeqNum = xdr.SequenceNumber(uint64(rootSequenceNumber.Sequence) + 1)
+	rootAccount.Balance = coreAccount.Balance
+	rootAccount.SeqNum = xdr.SequenceNumber(rootSequenceNumber.Sequence)
 	return database.AddAccount(rootAccount), nil
 }
 

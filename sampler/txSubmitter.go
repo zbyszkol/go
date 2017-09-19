@@ -1,6 +1,7 @@
 package sampler
 
 import (
+	"errors"
 	"github.com/stellar/go/build"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/support/db"
@@ -16,17 +17,30 @@ type TxSubmitter interface {
 }
 
 type SequenceNumberFetcher interface {
-	FetchSequenceNumber(address keypair.KP) build.Sequence
+	FetchSequenceNumber(address keypair.KP) (build.Sequence, error)
+}
+
+type AccountFetcher interface {
+	FetchAccount(address keypair.KP) (*core.Account, error)
 }
 
 type SequenceProvider struct {
 	txsub.SequenceProvider
 }
 
-func (provider *SequenceProvider) FetchSequenceNumber(address keypair.KP) build.Sequence {
+func (provider *SequenceProvider) FetchSequenceNumber(address keypair.KP) (build.Sequence, error) {
+	var result build.Sequence
 	addressString := address.Address()
-	results, _ := provider.SequenceProvider.Get([]string{addressString})
-	return build.Sequence{results[addressString]}
+	results, error := provider.SequenceProvider.Get([]string{addressString})
+	if error != nil {
+		return result, error
+	}
+	result.Sequence = results[addressString]
+	return result, nil
+}
+
+func (submitter *txSubmitter) FetchSequenceNumber(address keypair.KP) (build.Sequence, error) {
+	return submitter.sequenceProvider.FetchSequenceNumber(address)
 }
 
 type txSubmitter struct {
@@ -57,6 +71,15 @@ func (submitter *txSubmitter) Submit(sourceAccount *AccountEntry, txBuilder *bui
 	return result, sequenceFetcher, resultFetcher
 }
 
+func (submitter *txSubmitter) FetchAccount(address keypair.KP) (*core.Account, error) {
+	var account core.Account
+	error := submitter.core.AccountByAddress(&account, address.Address())
+	if error != nil {
+		return nil, errors.New("error while fetching an account")
+	}
+	return &account, nil
+}
+
 func waitForTransactionResult(coreQ *core.Q, txHash string) func() (*core.Transaction, error) {
 	return func() (*core.Transaction, error) {
 		var result core.Transaction
@@ -71,19 +94,24 @@ func waitForNewSequenceNumber(sequenceProvider SequenceNumberFetcher, account *A
 		sequence := accountSeqNum
 		for sequence == accountSeqNum {
 			if sequence < accountSeqNum {
-				panic("Wrong sequence number: value smaller than current")
+				return nil, errors.New("acount's sequence number is in the future")
 			}
-			sequence = xdr.SequenceNumber(sequenceProvider.FetchSequenceNumber(account.Keypair.GetSeed()).Sequence)
+			sequenceNumValue, fetchError := sequenceProvider.FetchSequenceNumber(account.Keypair.GetSeed())
+			if fetchError != nil {
+				return nil, errors.New("error while fetching a sequence number")
+			}
+			sequence = xdr.SequenceNumber(sequenceNumValue.Sequence)
 		}
 		return &build.Sequence{uint64(sequence)}, nil
 	}
 }
 
-func NewTxSubmitter(h *http.Client, url string, psqlConnectionString string) TxSubmitter {
+func NewTxSubmitter(h *http.Client, url, psqlConnectionString string) (TxSubmitter, AccountFetcher, SequenceNumberFetcher) {
 	submitter := txsub.NewDefaultSubmitter(h, url)
 	coreDb := newDbSession(psqlConnectionString)
 	seqProvider := &SequenceProvider{coreDb.SequenceProvider()}
-	return &txSubmitter{core: coreDb, submitter: submitter, sequenceProvider: seqProvider}
+	result := &txSubmitter{core: coreDb, submitter: submitter, sequenceProvider: seqProvider}
+	return result, result, result
 }
 
 func newDbSession(psqlConnectionString string) *core.Q {
