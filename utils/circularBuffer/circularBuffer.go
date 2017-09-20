@@ -7,7 +7,7 @@ type CircularBuffer struct {
 }
 
 func NewCircularBuffer(capacity int) *CircularBuffer {
-	return &CircularBuffer{values: make([]interface{}, 0, capacity), start: 0, count: 0}
+	return &CircularBuffer{values: make([]interface{}, capacity), start: 0, count: 0}
 }
 
 func (buffer *CircularBuffer) Add(value interface{}) (result *CircularBuffer, removed interface{}, wasRemoved bool) {

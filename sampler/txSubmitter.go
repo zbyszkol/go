@@ -51,9 +51,14 @@ type txSubmitter struct {
 }
 
 func (submitter *txSubmitter) Submit(sourceAccount *AccountEntry, txBuilder *build.TransactionBuilder) (txsub.SubmissionResult, func() (*build.Sequence, error), func() (*core.Transaction, error)) {
+	Logger.Printf("transaction to submit: %+v", txBuilder)
 	txHash, _ := txBuilder.HashHex()
 	envelope := txBuilder.Sign(sourceAccount.Keypair.GetSeed().Seed())
-	envelopeString, _ := envelope.Base64()
+	envelopeString, baseErr := envelope.Base64()
+	if baseErr != nil {
+		Logger.Printf("error while serializing an envelope: %s", baseErr)
+	}
+	Logger.Printf("submitting tx: %s", envelopeString)
 	result := submitter.submitter.Submit(submitter.context, envelopeString)
 	var sequenceFetcher func() (*build.Sequence, error)
 	var resultFetcher func() (*core.Transaction, error)
