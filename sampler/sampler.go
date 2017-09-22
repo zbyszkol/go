@@ -2,6 +2,7 @@ package sampler
 
 import (
 	"encoding/binary"
+	"github.com/stellar/go/amount"
 	"github.com/stellar/go/build"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/strkey"
@@ -9,8 +10,9 @@ import (
 	"github.com/stellar/go/xdr"
 	"math"
 	"math/rand"
-	"strconv"
 )
+
+const logTag string = "[sampler.go] "
 
 type AccountEntry struct {
 	xdr.AccountEntry
@@ -203,19 +205,34 @@ const (
 func (sampler *TransactionsSampler) Generate(size uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
 	sourceAccount := getRandomAccount(database)
 	sourceBalance := uint64(sourceAccount.Balance)
-	for sourceBalance <= minimalBalance+size*minimalFee {
-		sourceAccount = getRandomAccount(database)
+	accountsCount := database.GetAccountsCount()
+	count := 0
+	for ; sourceBalance <= minimalBalance+size*minimalFee && count < accountsCount; count++ {
+		Logger.Printf(logTag + "sampling an account")
+		sourceAccount = database.GetAccountByOrder(count)
+		sourceBalance = uint64(sourceAccount.Balance)
+		Logger.Printf(logTag+"sampled account: %+v", sourceAccount)
+	}
+	if count >= accountsCount {
+		// no account is able to fulfill constraints
+		Logger.Printf("no account able to fulfill fee constraints, returning nil")
+		return nil, nil
 	}
 	sourceAccount.Balance = xdr.Int64(sourceBalance - size*minimalFee)
 
-	generator := sampler.generators(sourceAccount)
 	operations := []build.TransactionMutator{
 		build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
 		build.Sequence{uint64(sourceAccount.SeqNum + 1)},
 		build.TestNetwork,
 	}
 	for it := uint64(0); it < size; it++ {
-		operations = append(operations, generator(1, database))
+		generator := sampler.generators(sourceAccount)
+		mutator := generator(1, database)
+		if mutator == nil {
+			Logger.Printf("sampled a nil transaction mutator")
+			continue
+		}
+		operations = append(operations, mutator)
 	}
 
 	transaction := build.Transaction(
@@ -294,36 +311,16 @@ func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator 
 	return func(size uint64, database Database) build.TransactionMutator {
 		destinationKeypair := getNextKeypair() // generateRandomKeypair()
 		destination := build.Destination{destinationKeypair.GetSeed().Address()}
-		startingBalance := uint64(1000) // TODO rand.Int63n(int64(sourceAccount.Balance)) + 20
-		Logger.Printf("[sampler.go] ")
-		amount := build.NativeAmount{strconv.FormatInt(int64(startingBalance), 10)}
+		startingBalance := rand.Int63n(int64(sourceAccount.Balance))
+		amount := build.NativeAmount{amount.String(xdr.Int64(startingBalance))}
 
-		// TODO forget about validation?
-		// rawSeed := fullKeypairToRawBytes(destinationKeypair)
-		// destAccountId := xdr.AccountId(xdr.PublicKey{Type: xdr.PublicKeyTypePublicKeyTypeEd25519, Ed25519: rawSeed})
-		// var createData xdr.LedgerEntryData
-		// createdData.Type = xdr.LedgerEntryTypeAccount
-		// createdData.Account = &xdr.AccountEntry{AccountId: destAccountId, Balance: startingBalance}
-		// var createdChange xdr.LedgerEntryChange
-		// createdChange.Type = xdr.LedgerEntryChangeTypeLedgerEntryCreated
-		// createdChange.Created = xdr.LedgerEntry{Data: createdData}
-
-		// sourceAccount.Balance -= startingBalance + fee
-		// var updatedData xdr.LedgerEntryData
-		// updatedData.Type = xdr.LedgerEntryTypeAccount
-		// updatedData.Account = sourceAccount.AccountEntry
-		// var updatedChange xdr.LedgerEntryChange
-		// updatedChange.Type = xdr.LedgerEntryChangeTypeLedgerEntryUpdated
-		// updatedChange.Updated = xdr.LedgerEntry{Data: updatedData}
-		// changes := xdr.LedgerEntryChanges([]LedgerEntryChange{createdChange, updatedChange})
-		// opMeta := xdr.OperationMeta{Changes: changes}
-
-		// TODO add stub to database
 		newAccount := &AccountEntry{Keypair: destinationKeypair}
 		newAccount.Balance = xdr.Int64(startingBalance)
 		database.AddAccount(newAccount)
 		sourceAccount.Balance -= xdr.Int64(startingBalance)
-		return build.CreateAccount(destination, amount)
+		result := build.CreateAccount(destination, amount)
+		Logger.Printf(logTag+"created CreateAccount tx: %+v", result)
+		return &result
 	}
 }
 
@@ -353,16 +350,22 @@ func bytesToString(data []byte) string {
 
 func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(size uint64, database Database) build.TransactionMutator {
+		Logger.Printf("sampling a valid payment")
 		destinationAccount := getRandomAccount(database)
+		// for destinationAccount.Keypair.GetSeed().Address() == sourceAccount.Keypair.GetSeed().Address() {
+		// 	destinationAccount = getRandomAccount(database)
+		// }
 		trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
-		amount := rand.Int63n(min(int64(trustLine.Balance), int64(destTrustLine.Limit)))
-		amountString := strconv.FormatInt(amount, 10)
+		availableAmount := min(int64(trustLine.Balance), int64(destTrustLine.Limit))
+		Logger.Printf(logTag+"amount of assets available for tx: %d", availableAmount)
+		payment := rand.Int63n(availableAmount)
+		amountString := amount.String(xdr.Int64(payment))
 		var paymentMut build.PaymentMutator
 		if trustLine.Asset.Type == xdr.AssetTypeAssetTypeNative {
 			paymentMut = build.NativeAmount{amountString}
 
-			destinationAccount.Balance += xdr.Int64(amount)
-			sourceAccount.Balance -= xdr.Int64(amount)
+			destinationAccount.Balance += xdr.Int64(payment)
+			sourceAccount.Balance -= xdr.Int64(payment)
 		} else {
 			asset := trustLine.Asset
 			var code, issuer string
@@ -375,10 +378,12 @@ func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
 			}
 			paymentMut = build.CreditAmount{Code: code, Issuer: issuer, Amount: amountString}
 
-			destTrustLine.Balance += xdr.Int64(amount)
-			trustLine.Balance -= xdr.Int64(amount)
+			destTrustLine.Balance += xdr.Int64(payment)
+			trustLine.Balance -= xdr.Int64(payment)
 		}
-		return build.Payment(build.Destination{destinationAccount.Keypair.GetSeed().Address()}, paymentMut)
+		result := build.Payment(build.Destination{destinationAccount.Keypair.GetSeed().Address()}, paymentMut)
+		Logger.Printf(logTag+"created Payment tx: %+v", result)
+		return result
 	}
 }
 

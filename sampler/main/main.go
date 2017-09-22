@@ -39,7 +39,11 @@ func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 		size := uint64(rand.Intn(100) + 1)
 		Logger.Printf("sampling data")
 		data, sourceAccount := sampler(size, database)
-		Logger.Printf("data sampled %s", &data)
+		Logger.Printf("data sampled %+v", &data)
+		if data == nil || sourceAccount == nil {
+			Logger.Printf("unable to generate correct transaction, exiting...")
+			return
+		}
 
 		Logger.Print("submitting tx")
 		submitResult, seqenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
