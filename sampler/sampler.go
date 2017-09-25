@@ -10,6 +10,7 @@ import (
 	"github.com/stellar/go/xdr"
 	"math"
 	"math/rand"
+	"sort"
 )
 
 const logTag string = "[sampler.go] "
@@ -198,8 +199,9 @@ func NewTransactionGenerator() TransactionGenerator {
 }
 
 const (
-	minimalBalance uint64 = 20
-	minimalFee     uint64 = 100
+	baseFee        uint64 = 100
+	baseReserve    uint64 = 10 * amount.One
+	minimalBalance uint64 = 2 * baseReserve
 )
 
 func (sampler *TransactionsSampler) Generate(size uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
@@ -207,9 +209,11 @@ func (sampler *TransactionsSampler) Generate(size uint64, database Database) (*b
 	sourceBalance := uint64(sourceAccount.Balance)
 	accountsCount := database.GetAccountsCount()
 	count := 0
-	for ; sourceBalance <= minimalBalance+size*minimalFee && count < accountsCount; count++ {
+	balanceRequired := minimalBalance + size*baseFee + size
+	// TODO generate 'size' random numbers that sums to something smaller than balance-minimalBalance
+	for ; sourceBalance <= balanceRequired && count < accountsCount; count++ {
 		Logger.Printf(logTag + "sampling an account")
-		sourceAccount = database.GetAccountByOrder(count)
+		sourceAccount = getRandomAccount(database)
 		sourceBalance = uint64(sourceAccount.Balance)
 		Logger.Printf(logTag+"sampled account: %+v", sourceAccount)
 	}
@@ -218,7 +222,7 @@ func (sampler *TransactionsSampler) Generate(size uint64, database Database) (*b
 		Logger.Printf("no account able to fulfill fee constraints, returning nil")
 		return nil, nil
 	}
-	sourceAccount.Balance = xdr.Int64(sourceBalance - size*minimalFee)
+	sourceAccount.Balance -= xdr.Int64(size * baseFee)
 
 	operations := []build.TransactionMutator{
 		build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
@@ -311,7 +315,7 @@ func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator 
 	return func(size uint64, database Database) build.TransactionMutator {
 		destinationKeypair := getNextKeypair() // generateRandomKeypair()
 		destination := build.Destination{destinationKeypair.GetSeed().Address()}
-		startingBalance := rand.Int63n(int64(sourceAccount.Balance))
+		startingBalance := rand.Int63n(int64(sourceAccount.Balance)) + 1
 		amount := build.NativeAmount{amount.String(xdr.Int64(startingBalance))}
 
 		newAccount := &AccountEntry{Keypair: destinationKeypair}
@@ -358,7 +362,7 @@ func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
 		trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
 		availableAmount := min(int64(trustLine.Balance), int64(destTrustLine.Limit))
 		Logger.Printf(logTag+"amount of assets available for tx: %d", availableAmount)
-		payment := rand.Int63n(availableAmount)
+		payment := rand.Int63n(availableAmount) + 1
 		amountString := amount.String(xdr.Int64(payment))
 		var paymentMut build.PaymentMutator
 		if trustLine.Asset.Type == xdr.AssetTypeAssetTypeNative {
@@ -413,3 +417,101 @@ func getRandomTrustLine(sourceAccount, destinationAccount *AccountEntry, databas
 func getRandomAccount(database Database) *AccountEntry {
 	return database.GetAccountByOrder(rand.Intn(database.GetAccountsCount()))
 }
+
+type Ints64 []int64
+
+func (ints Ints64) Len() int {
+	return len(ints)
+}
+
+func (ints Ints64) Less(i, j int) bool {
+	return ints[i] < ints[j]
+}
+
+func (ints Ints64) Swap(i, j int) {
+	tmp := ints[i]
+	ints[i] = ints[j]
+	ints[j] = tmp
+}
+
+func getRandomPartitionWithZeros(sum int64, size int) []int64 {
+	var differences Ints64 = make(Ints64, size+1)
+	for ix := 0; ix < size-1; ix++ {
+		difference := rand.Int63n(sum) + 1
+		differences[ix] = difference
+	}
+	differences[size] = 0
+	differences[size+1] = sum
+	sort.Sort(differences)
+	previous := differences[0]
+	for ix := 1; ix < size; ix++ {
+		tmp := differences[ix]
+		differences[ix] = differences[ix] - previous
+		previous = tmp
+	}
+	return differences[:size+1]
+}
+
+func GetRandomPartitionWithoutZeros(sum int64, size int) []int64 {
+	Logger.Printf("sum: %d", sum)
+	Logger.Printf("size: %d", size)
+	return getRandomPartitionWithoutZeros(sum, size)
+}
+
+// func getRandomPartition(sum int64, size int, diffFunc func(sum int64, size int) Ints64) Ints64 {
+// 	differences := diffFunc(sum, size)
+// 	Logger.Printf("differences: %v", differences)
+// 	sort.Sort(differences)
+// 	Logger.Printf("sorted differences: %v", differences)
+// 	previous := differences[0]
+// 	for ix := 1; ix < size; ix++ {
+// 		tmp := differences[ix]
+// 		differences[ix] = differences[ix] - previous
+// 		previous = tmp
+// 	}
+// 	return differences
+// }
+
+func getRandomPartitionWithoutZeros(sum int64, size int) []int64 {
+	differences := getUniformMofN(sum-1, size-1)
+	differences = append(differences, sum)
+	Logger.Printf("differences: %v", differences)
+	sort.Sort(differences)
+	Logger.Printf("sorted differences: %v", differences)
+	previous := differences[0]
+	for ix := 1; ix < size; ix++ {
+		tmp := differences[ix]
+		differences[ix] = differences[ix] - previous
+		previous = tmp
+	}
+	return differences
+}
+
+func getUniformMofN(maxValue int64, size int) Ints64 {
+	var result Ints64 = Ints64{}
+	var selected map[int64]bool = make(map[int64]bool)
+	for ix := int64(maxValue - int64(size) + 1); ix <= maxValue; ix++ {
+		Logger.Printf("ix value: %d", ix)
+		selectedValue := rand.Int63n(ix) + 1
+		if selected[selectedValue] {
+			selectedValue = ix
+		}
+		selected[selectedValue] = true
+		result = append(result, selectedValue)
+	}
+	return result
+}
+
+// func getUniformMofNFromSlice(data []int64, size int) []int64 {
+// 	var result []int64 = make([]int64, size)
+// 	var selected map[int64]bool = make(map[int64]bool)
+// 	for ix int64 = len(data)-size; ix < len(data); ix++ {
+// 		selectedValue := data[math.Int63n(ix)]
+// 		if selected[selectedValue] {
+// 			selectedValue = data[ix]
+// 		}
+// 		selected[selectedValue] = true
+// 		result = append(result, selectedValue)
+// 	}
+// 	return result
+// }

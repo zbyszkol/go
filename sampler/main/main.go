@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	. "github.com/stellar/go/sampler"
 	"github.com/stellar/go/xdr"
 	"math/rand"
@@ -89,7 +90,16 @@ func setupSignalHandler(cancellationChannel chan struct{}) {
 	}()
 }
 
+func test() {
+	value := rand.Intn(100) + 1
+	size := rand.Intn(value) + 1
+	partition := GetRandomPartitionWithoutZeros(int64(value), size)
+	fmt.Println(partition)
+}
+
 func main() {
+	test()
+	return
 	postgresConnectionString := flag.String("pg", "dbname=core host=localhost user=stellar password=__PGPASS__", "PostgreSQL connection string")
 	stellarCoreUrl := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
 	flag.Parse()
