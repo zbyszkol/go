@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"time"
 )
 
@@ -93,13 +94,19 @@ func setupSignalHandler(cancellationChannel chan struct{}) {
 func test() {
 	value := rand.Intn(100) + 1
 	size := rand.Intn(value) + 1
-	partition := GetRandomPartitionWithoutZeros(int64(value), size)
+	partition := GetRandomPartitionWithZeros(int64(value), size)
 	fmt.Println(partition)
+
+	testData := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	testData = GetUniformMofNFromSlice(testData, 4)
+	sort.Ints(testData)
+	fmt.Println(testData)
 }
 
 func main() {
 	test()
 	return
+
 	postgresConnectionString := flag.String("pg", "dbname=core host=localhost user=stellar password=__PGPASS__", "PostgreSQL connection string")
 	stellarCoreUrl := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
 	flag.Parse()

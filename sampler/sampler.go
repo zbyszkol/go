@@ -434,47 +434,8 @@ func (ints Ints64) Swap(i, j int) {
 	ints[j] = tmp
 }
 
-func getRandomPartitionWithZeros(sum int64, size int) []int64 {
-	var differences Ints64 = make(Ints64, size+1)
-	for ix := 0; ix < size-1; ix++ {
-		difference := rand.Int63n(sum) + 1
-		differences[ix] = difference
-	}
-	differences[size] = 0
-	differences[size+1] = sum
-	sort.Sort(differences)
-	previous := differences[0]
-	for ix := 1; ix < size; ix++ {
-		tmp := differences[ix]
-		differences[ix] = differences[ix] - previous
-		previous = tmp
-	}
-	return differences[:size+1]
-}
-
-func GetRandomPartitionWithoutZeros(sum int64, size int) []int64 {
-	Logger.Printf("sum: %d", sum)
-	Logger.Printf("size: %d", size)
-	return getRandomPartitionWithoutZeros(sum, size)
-}
-
-// func getRandomPartition(sum int64, size int, diffFunc func(sum int64, size int) Ints64) Ints64 {
-// 	differences := diffFunc(sum, size)
-// 	Logger.Printf("differences: %v", differences)
-// 	sort.Sort(differences)
-// 	Logger.Printf("sorted differences: %v", differences)
-// 	previous := differences[0]
-// 	for ix := 1; ix < size; ix++ {
-// 		tmp := differences[ix]
-// 		differences[ix] = differences[ix] - previous
-// 		previous = tmp
-// 	}
-// 	return differences
-// }
-
-func getRandomPartitionWithoutZeros(sum int64, size int) []int64 {
-	differences := getUniformMofN(sum-1, size-1)
-	differences = append(differences, sum)
+func getRandomPartition(sum int64, size int, diffFunc func(sum int64, size int) Ints64) Ints64 {
+	differences := diffFunc(sum, size)
 	Logger.Printf("differences: %v", differences)
 	sort.Sort(differences)
 	Logger.Printf("sorted differences: %v", differences)
@@ -487,11 +448,39 @@ func getRandomPartitionWithoutZeros(sum int64, size int) []int64 {
 	return differences
 }
 
+func GetRandomPartitionWithZeros(sum int64, size int) []int64 {
+	return getRandomPartitionWithZeros(sum, size)
+}
+
+func getRandomPartitionWithZeros(sum int64, size int) []int64 {
+	diffFunc := func(sum int64, size int) Ints64 {
+		var differences Ints64 = make(Ints64, size)
+		for ix := 0; ix < size-1; ix++ {
+			differences[ix] = rand.Int63n(sum + 1)
+		}
+		differences[size-1] = sum
+		return differences
+	}
+	return getRandomPartition(sum, size, diffFunc)
+}
+
+func GetRandomPartitionWithoutZeros(sum int64, size int) []int64 {
+	Logger.Printf("sum: %d", sum)
+	Logger.Printf("size: %d", size)
+	return getRandomPartitionWithoutZeros(sum, size)
+}
+
+func getRandomPartitionWithoutZeros(sum int64, size int) []int64 {
+	diffFunc := func(sum int64, size int) Ints64 {
+		return append(getUniformMofN(sum-1, size-1), sum)
+	}
+	return getRandomPartition(sum, size, diffFunc)
+}
+
 func getUniformMofN(maxValue int64, size int) Ints64 {
-	var result Ints64 = Ints64{}
-	var selected map[int64]bool = make(map[int64]bool)
+	var result Ints64 = make(Ints64, 0, size)
+	selected := map[int64]bool{}
 	for ix := int64(maxValue - int64(size) + 1); ix <= maxValue; ix++ {
-		Logger.Printf("ix value: %d", ix)
 		selectedValue := rand.Int63n(ix) + 1
 		if selected[selectedValue] {
 			selectedValue = ix
@@ -502,16 +491,16 @@ func getUniformMofN(maxValue int64, size int) Ints64 {
 	return result
 }
 
-// func getUniformMofNFromSlice(data []int64, size int) []int64 {
-// 	var result []int64 = make([]int64, size)
-// 	var selected map[int64]bool = make(map[int64]bool)
-// 	for ix int64 = len(data)-size; ix < len(data); ix++ {
-// 		selectedValue := data[math.Int63n(ix)]
-// 		if selected[selectedValue] {
-// 			selectedValue = data[ix]
-// 		}
-// 		selected[selectedValue] = true
-// 		result = append(result, selectedValue)
-// 	}
-// 	return result
-// }
+func GetUniformMofNFromSlice(data []int, size int) []int {
+	var result []int = make([]int, 0, size)
+	selected := map[int]bool{}
+	for ix := len(data) - size; ix < len(data); ix++ {
+		selectedIndex := rand.Intn(ix)
+		if selected[selectedIndex] {
+			selectedIndex = ix
+		}
+		selected[selectedIndex] = true
+		result = append(result, data[selectedIndex])
+	}
+	return result
+}
