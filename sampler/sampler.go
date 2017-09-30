@@ -17,6 +17,7 @@ const logTag string = "[sampler.go] "
 
 type AccountEntry struct {
 	xdr.AccountEntry
+	SequenceManager
 	Keypair SeedProvider
 }
 
@@ -36,6 +37,41 @@ type TrustLineEntry struct {
 
 type SeedProvider interface {
 	GetSeed() *Full
+}
+
+type SequenceManager interface {
+	GetSequence() (build.Sequence, error)
+	SetSequence(build.Sequence)
+}
+
+func (value *Uint64) GetSequence() (build.Sequence, error) {
+	return build.Sequence{uint64(*value)}, nil
+}
+
+func (value *Uint64) SetSequence(newValue build.Sequence) {
+	*value = Uint64(newValue.Sequence)
+}
+
+type SequenceInitilizer struct {
+	account     *AccountEntry
+	seqProvider SequenceNumberFetcher
+}
+
+func (value *SequenceInitilizer) GetSequence() (build.Sequence, error) {
+	var result build.Sequence
+	seq, error := value.seqProvider.FetchSequenceNumber(value.account.Keypair.GetSeed())
+	if error != nil {
+		Logger.Printf("error while fetching a sequence number: %v", error)
+		return result, nil
+	}
+	provider := Uint64(seq.Sequence)
+	value.account.SequenceManager = &provider
+	return seq, nil
+}
+
+func (value *SequenceInitilizer) SetSequence(seq build.Sequence) {
+	newValue := Uint64(seq.Sequence)
+	value.account.SequenceManager = &newValue
 }
 
 type Uint64 uint64
@@ -104,14 +140,15 @@ type InMemoryDatabase struct {
 	orderedData       *circularBuffer.CircularBuffer
 	mappedData        map[string]*AccountEntry
 	orderedTrustlines *circularBuffer.CircularBuffer
+	sequenceProvider  SequenceNumberFetcher
 	// backup            []tuple
 	// added             []*AccountEntry
 	// mappedTrustlines  map[string]*TrustLineEntry
 }
 
-func NewInMemoryDatabase() Database {
+func NewInMemoryDatabase(sequenceFetcher SequenceNumberFetcher) Database {
 	dataMap := make(map[string]*AccountEntry)
-	return &InMemoryDatabase{orderedData: circularBuffer.NewCircularBuffer(1000), mappedData: dataMap}
+	return &InMemoryDatabase{orderedData: circularBuffer.NewCircularBuffer(1000), mappedData: dataMap, sequenceProvider: sequenceFetcher}
 }
 
 func (data *InMemoryDatabase) BeginTransaction() {
@@ -153,6 +190,7 @@ func (data *InMemoryDatabase) AddAccount(account *AccountEntry) Database {
 		removedAccount := removed.(*AccountEntry)
 		delete(data.mappedData, removedAccount.Keypair.GetSeed().Address())
 	}
+	account.SequenceManager = &SequenceInitilizer{account: account, seqProvider: data.sequenceProvider}
 	// TODO add data to remove account
 	return data
 }
@@ -190,7 +228,7 @@ type TransactionsSampler struct {
 
 func NewTransactionGenerator() TransactionGenerator {
 	accountGenerator := generatorsListEntry{generator: getValidCreateAccountMutator, bias: 50}
-	paymentGenerator := generatorsListEntry{generator: getValidPaymentMutator, bias: 50}
+	paymentGenerator := generatorsListEntry{generator: getValidPaymentMutatorNative, bias: 50}
 	generatorsList := []generatorsListEntry{accountGenerator, paymentGenerator}
 	sampler := &TransactionsSampler{generators: getRandomGeneratorWrapper(generatorsList)}
 	return func(size uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
@@ -199,44 +237,42 @@ func NewTransactionGenerator() TransactionGenerator {
 }
 
 const (
-	baseFee        uint64 = 100
-	baseReserve    uint64 = 10 * amount.One
-	minimalBalance uint64 = 2 * baseReserve
+	baseFee        int64 = 100
+	baseReserve    int64 = 10 * amount.One
+	minimalBalance int64 = 2 * baseReserve
 )
 
-func (sampler *TransactionsSampler) Generate(size uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
+func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
 	sourceAccount := getRandomAccount(database)
-	sourceBalance := uint64(sourceAccount.Balance)
-	accountsCount := database.GetAccountsCount()
-	count := 0
-	balanceRequired := minimalBalance + size*baseFee + size
-	// TODO generate 'size' random numbers that sums to something smaller than balance-minimalBalance
-	for ; sourceBalance <= balanceRequired && count < accountsCount; count++ {
-		Logger.Printf(logTag + "sampling an account")
-		sourceAccount = getRandomAccount(database)
-		sourceBalance = uint64(sourceAccount.Balance)
-		Logger.Printf(logTag+"sampled account: %+v", sourceAccount)
-	}
-	if count >= accountsCount {
-		// no account is able to fulfill constraints
-		Logger.Printf("no account able to fulfill fee constraints, returning nil")
+	sourceBalance := int64(sourceAccount.Balance)
+	availableAmount := sourceBalance - minimalBalance
+	maximalNumberOfOperations := availableAmount / (baseFee + minimalBalance)
+	maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
+	if maximalNumberOfOperations < 1 {
 		return nil, nil
 	}
-	sourceAccount.Balance -= xdr.Int64(size * baseFee)
+	size := rand.Intn(int(maximalNumberOfOperations))
+	availableAmount -= int64(size) * (baseFee + minimalBalance)
+	balancePartition := GetRandomPartitionWithoutZeros(availableAmount, size)
+	Logger.Printf("balance's partition: %v", balancePartition)
 
+	seq, _ := sourceAccount.GetSequence()
+	seq.Sequence++
+	sourceAccount.SetSequence(seq)
 	operations := []build.TransactionMutator{
 		build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
-		build.Sequence{uint64(sourceAccount.SeqNum + 1)},
+		seq,
 		build.TestNetwork,
 	}
-	for it := uint64(0); it < size; it++ {
+	for _, value := range balancePartition {
 		generator := sampler.generators(sourceAccount)
-		mutator := generator(1, database)
+		mutator := generator(uint64(value+minimalBalance), database)
 		if mutator == nil {
 			Logger.Printf("sampled a nil transaction mutator")
 			continue
 		}
 		operations = append(operations, mutator)
+		sourceAccount.Balance -= xdr.Int64(baseFee)
 	}
 
 	transaction := build.Transaction(
@@ -312,18 +348,18 @@ func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) 
 }
 
 func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
-	return func(size uint64, database Database) build.TransactionMutator {
+	return func(startingBalance uint64, database Database) build.TransactionMutator {
 		destinationKeypair := getNextKeypair() // generateRandomKeypair()
 		destination := build.Destination{destinationKeypair.GetSeed().Address()}
-		startingBalance := rand.Int63n(int64(sourceAccount.Balance)) + 1
 		amount := build.NativeAmount{amount.String(xdr.Int64(startingBalance))}
 
 		newAccount := &AccountEntry{Keypair: destinationKeypair}
 		newAccount.Balance = xdr.Int64(startingBalance)
 		database.AddAccount(newAccount)
-		sourceAccount.Balance -= xdr.Int64(startingBalance)
 		result := build.CreateAccount(destination, amount)
 		Logger.Printf(logTag+"created CreateAccount tx: %+v", result)
+
+		sourceAccount.Balance -= xdr.Int64(int64(startingBalance))
 		return &result
 	}
 }
@@ -352,17 +388,26 @@ func bytesToString(data []byte) string {
 	return strkey.MustEncode(strkey.VersionByteSeed, data)
 }
 
-func getValidPaymentMutator(sourceAccount *AccountEntry) MutatorGenerator {
-	return func(size uint64, database Database) build.TransactionMutator {
+func getValidPaymentMutatorNative(sourceAccount *AccountEntry) MutatorGenerator {
+	return func(payment uint64, database Database) build.TransactionMutator {
 		Logger.Printf("sampling a valid payment")
 		destinationAccount := getRandomAccount(database)
-		// for destinationAccount.Keypair.GetSeed().Address() == sourceAccount.Keypair.GetSeed().Address() {
-		// 	destinationAccount = getRandomAccount(database)
-		// }
+		amountString := amount.String(xdr.Int64(payment))
+		result := build.Payment(build.Destination{destinationAccount.Keypair.GetSeed().Address()}, build.NativeAmount{amountString})
+		destinationAccount.Balance += xdr.Int64(payment)
+		sourceAccount.Balance -= xdr.Int64(payment)
+		Logger.Printf(logTag+"created Payment tx: %+v", result)
+		return result
+	}
+}
+
+func getValidPaymentMutatorFromTrustline(sourceAccount *AccountEntry) MutatorGenerator {
+	return func(payment uint64, database Database) build.TransactionMutator {
+		Logger.Printf("sampling a valid payment")
+		destinationAccount := getRandomAccount(database)
 		trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
 		availableAmount := min(int64(trustLine.Balance), int64(destTrustLine.Limit))
 		Logger.Printf(logTag+"amount of assets available for tx: %d", availableAmount)
-		payment := rand.Int63n(availableAmount) + 1
 		amountString := amount.String(xdr.Int64(payment))
 		var paymentMut build.PaymentMutator
 		if trustLine.Asset.Type == xdr.AssetTypeAssetTypeNative {
@@ -471,6 +516,12 @@ func GetRandomPartitionWithoutZeros(sum int64, size int) []int64 {
 }
 
 func getRandomPartitionWithoutZeros(sum int64, size int) []int64 {
+	if size < 1 {
+		return []int64{}
+	}
+	if size == 1 {
+		return []int64{sum}
+	}
 	diffFunc := func(sum int64, size int) Ints64 {
 		return append(getUniformMofN(sum-1, size-1), sum)
 	}

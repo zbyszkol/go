@@ -87,9 +87,14 @@ func (submitter *txSubmitter) FetchAccount(address keypair.KP) (*core.Account, e
 
 func waitForTransactionResult(coreQ *core.Q, txHash string) func() (*core.Transaction, error) {
 	return func() (*core.Transaction, error) {
-		var result core.Transaction
-		coreQ.TransactionByHash(&result, txHash)
-		return &result, nil
+		var result *core.Transaction = nil
+		for result == nil {
+			error := coreQ.TransactionByHash(result, txHash)
+			if error != nil {
+				return nil, error
+			}
+		}
+		return result, nil
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	. "github.com/stellar/go/sampler"
 	"github.com/stellar/go/xdr"
+	"github.com/stellar/horizon/db2/core"
 	"math/rand"
 	"net/http"
 	"os"
@@ -14,15 +15,14 @@ import (
 )
 
 func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}) {
-	var sampler TransactionGenerator = NewTransactionGenerator()
-	var database Database = NewInMemoryDatabase()
-
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(time.Second)
 	var submitter TxSubmitter
 	var accountFetcher AccountFetcher
 	var sequenceFetcher SequenceNumberFetcher
 	submitter, accountFetcher, sequenceFetcher = NewTxSubmitter(httpClient, stellarCoreUrl, postgresqlConnection)
+	var sampler TransactionGenerator = NewTransactionGenerator()
+	var database Database = NewInMemoryDatabase(sequenceFetcher)
 
 	database, rootError := AddRootAccount(database, accountFetcher, sequenceFetcher)
 	if rootError != nil {
@@ -43,8 +43,8 @@ func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 		data, sourceAccount := sampler(size, database)
 		Logger.Printf("data sampled %+v", &data)
 		if data == nil || sourceAccount == nil {
-			Logger.Printf("unable to generate correct transaction, exiting...")
-			return
+			Logger.Printf("unable to generate correct transaction, continuing...")
+			continue
 		}
 
 		Logger.Print("submitting tx")
@@ -52,7 +52,8 @@ func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 		if submitResult.Err != nil {
 			// TODO scream and run away, don't forget to take your dog
 			Logger.Printf("tx submit rejected: %s", submitResult.Err)
-			database.RejectTransaction()
+			handleTransactionError(database, transactionResult)
+
 			continue
 		}
 		Logger.Print("tx submitted")
@@ -62,14 +63,8 @@ func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 		if seqError != nil {
 			// TODO clean up - there are at least two sampler.go files
 			Logger.Print("error while checking if tx was externalized; downloading tx result")
-			coreResult, transError := transactionResult()
-			if transError != nil {
-				Logger.Print("that's it, rejecting")
-				database.RejectTransaction()
-			} else {
-				Logger.Print("applying changes")
-				database = ApplyChanges(&coreResult.ResultMeta, database)
-			}
+			handleTransactionError(database, transactionResult)
+
 			continue
 		}
 		sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
@@ -78,6 +73,23 @@ func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 
 		database.EndTransaction()
 	}
+}
+
+func handleTransactionError(database Database, transactionResult func() (*core.Transaction, error)) Database {
+	database.RejectTransaction()
+	coreResult, transError := transactionResult()
+	Logger.Printf("core result: %+v", coreResult)
+	if transError != nil {
+		Logger.Print("that's it, rejecting")
+	} else {
+		Logger.Print("applying changes")
+		if coreResult != nil {
+			database = ApplyChanges(&coreResult.ResultMeta, database)
+		} else {
+			Logger.Printf("coreResult is nil")
+		}
+	}
+	return database
 }
 
 func setupSignalHandler(cancellationChannel chan struct{}) {
@@ -104,8 +116,8 @@ func test() {
 }
 
 func main() {
-	test()
-	return
+	// test()
+	// return
 
 	postgresConnectionString := flag.String("pg", "dbname=core host=localhost user=stellar password=__PGPASS__", "PostgreSQL connection string")
 	stellarCoreUrl := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
