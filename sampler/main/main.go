@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	. "github.com/stellar/go/sampler"
@@ -14,7 +15,9 @@ import (
 	"time"
 )
 
-func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}) {
+const Debug bool = true
+
+func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}) {
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(time.Second)
 	var submitter TxSubmitter
@@ -29,50 +32,65 @@ func SamplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 		panic("Unable to add the root account.")
 	}
 
-	for {
+	for counter := 0; counter < 100; counter++ {
 		select {
 		case <-cancellation:
 			return
 		default:
 		}
-
-		database.BeginTransaction()
-
-		size := uint64(rand.Intn(100) + 1)
-		Logger.Printf("sampling data")
-		data, sourceAccount := sampler(size, database)
-		Logger.Printf("data sampled %+v", &data)
-		if data == nil || sourceAccount == nil {
-			Logger.Printf("unable to generate correct transaction, continuing...")
-			continue
+		txError := singleTransaction(database, submitter, sampler)
+		if txError != nil {
+			Logger.Printf("error while committing a transaction: %s", txError)
+			return
 		}
-
-		Logger.Print("submitting tx")
-		submitResult, seqenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
-		if submitResult.Err != nil {
-			// TODO scream and run away, don't forget to take your dog
-			Logger.Printf("tx submit rejected: %s", submitResult.Err)
-			handleTransactionError(database, transactionResult)
-
-			continue
-		}
-		Logger.Print("tx submitted")
-
-		Logger.Print("waiting for tx to externalize (seqnum increase)")
-		newSequenceNum, seqError := seqenceUpdate()
-		if seqError != nil {
-			// TODO clean up - there are at least two sampler.go files
-			Logger.Print("error while checking if tx was externalized; downloading tx result")
-			handleTransactionError(database, transactionResult)
-
-			continue
-		}
-		sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
-
-		Logger.Print("tx externalized, finishing")
-
-		database.EndTransaction()
 	}
+}
+
+func singleTransaction(database Database, submitter TxSubmitter, sampler TransactionGenerator) error {
+	database.BeginTransaction()
+	defer database.EndTransaction()
+
+	size := uint64(rand.Intn(100) + 1)
+	Logger.Printf("sampling data")
+	data, sourceAccount := sampler(size, database)
+	Logger.Printf("data sampled %+v", &data)
+	if data == nil || sourceAccount == nil {
+		Logger.Printf("unable to generate correct transaction, continuing...")
+		return errors.New("unable to generate correct transaction")
+	}
+
+	Logger.Print("submitting tx")
+	submitResult, seqenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
+	if submitResult.Err != nil {
+		Logger.Printf("tx submit rejected: %s", submitResult.Err)
+		handleTransactionError(database, transactionResult)
+
+		return errors.New("tx submit rejected")
+	}
+	Logger.Print("tx submitted")
+
+	Logger.Print("waiting for tx to externalize (seqnum increase)")
+	newSequenceNum, seqError := seqenceUpdate()
+	if seqError != nil {
+		// TODO clean up - there are at least two sampler.go files
+		Logger.Print("error while checking if tx was externalized; downloading tx result")
+		handleTransactionError(database, transactionResult)
+
+		return errors.New("error while checking if tx was externalized")
+	}
+	sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
+
+	if Debug {
+		txResult, txError := transactionResult()
+		if txError != nil {
+			Logger.Printf("error while downloading tx result: %+v", txError)
+		} else {
+			Logger.Printf("tx result: %+v", txResult)
+		}
+	}
+
+	Logger.Print("tx externalized, finishing")
+	return nil
 }
 
 func handleTransactionError(database Database, transactionResult func() (*core.Transaction, error)) Database {
@@ -131,5 +149,5 @@ func main() {
 
 	setupSignalHandler(cancellation)
 
-	SamplerLoop(*postgresConnectionString, *stellarCoreUrl, cancellation)
+	samplerLoop(*postgresConnectionString, *stellarCoreUrl, cancellation)
 }

@@ -85,16 +85,27 @@ func (submitter *txSubmitter) FetchAccount(address keypair.KP) (*core.Account, e
 	return &account, nil
 }
 
+// func waitForLedgerSequenceNumberExceed(ledgerSeqNum uint64) error {
+// 	seqNum := ledgerSeqNum
+// 	for seqNum <= ledgerSeqNum {
+
+// 	}
+// }
+
 func waitForTransactionResult(coreQ *core.Q, txHash string) func() (*core.Transaction, error) {
 	return func() (*core.Transaction, error) {
-		var result *core.Transaction = nil
-		for result == nil {
-			error := coreQ.TransactionByHash(result, txHash)
+		var result core.Transaction
+		for {
+			error := coreQ.TransactionByHash(&result, txHash)
 			if error != nil {
-				return nil, error
+				if !coreQ.NoRows(error) {
+					return nil, error
+				}
+			} else {
+				break
 			}
 		}
-		return result, nil
+		return &result, nil
 	}
 }
 

@@ -13,8 +13,6 @@ import (
 	"sort"
 )
 
-const logTag string = "[sampler.go] "
-
 type AccountEntry struct {
 	xdr.AccountEntry
 	SequenceManager
@@ -58,6 +56,7 @@ type SequenceInitilizer struct {
 }
 
 func (value *SequenceInitilizer) GetSequence() (build.Sequence, error) {
+	Logger.Print("fetching sequence number")
 	var result build.Sequence
 	seq, error := value.seqProvider.FetchSequenceNumber(value.account.Keypair.GetSeed())
 	if error != nil {
@@ -65,6 +64,7 @@ func (value *SequenceInitilizer) GetSequence() (build.Sequence, error) {
 		return result, nil
 	}
 	provider := Uint64(seq.Sequence)
+	Logger.Printf("sequence number fetched, changing provider")
 	value.account.SequenceManager = &provider
 	return seq, nil
 }
@@ -246,17 +246,28 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	sourceAccount := getRandomAccount(database)
 	sourceBalance := int64(sourceAccount.Balance)
 	availableAmount := sourceBalance - minimalBalance
+	if availableAmount == 0 {
+		Logger.Print("account's balance lower than minimal balance")
+		return nil, sourceAccount
+	}
+	availableAmount = rand.Int63n(availableAmount)
+	Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
 	maximalNumberOfOperations := availableAmount / (baseFee + minimalBalance)
 	maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
 	if maximalNumberOfOperations < 1 {
-		return nil, nil
+		Logger.Print("account's balance is too small")
+		return nil, sourceAccount
 	}
-	size := rand.Intn(int(maximalNumberOfOperations))
+	size := rand.Intn(int(maximalNumberOfOperations)) + 1
 	availableAmount -= int64(size) * (baseFee + minimalBalance)
 	balancePartition := GetRandomPartitionWithoutZeros(availableAmount, size)
 	Logger.Printf("balance's partition: %v", balancePartition)
 
-	seq, _ := sourceAccount.GetSequence()
+	seq, seqError := sourceAccount.GetSequence()
+	if seqError != nil {
+		Logger.Print("error while getting account's sequence number")
+		return nil, sourceAccount
+	}
 	seq.Sequence++
 	sourceAccount.SetSequence(seq)
 	operations := []build.TransactionMutator{
@@ -266,7 +277,7 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	}
 	for _, value := range balancePartition {
 		generator := sampler.generators(sourceAccount)
-		mutator := generator(uint64(value+minimalBalance), database)
+		mutator := generator(uint64(value + minimalBalance), database)
 		if mutator == nil {
 			Logger.Printf("sampled a nil transaction mutator")
 			continue
@@ -357,7 +368,7 @@ func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator 
 		newAccount.Balance = xdr.Int64(startingBalance)
 		database.AddAccount(newAccount)
 		result := build.CreateAccount(destination, amount)
-		Logger.Printf(logTag+"created CreateAccount tx: %+v", result)
+		Logger.Printf("created CreateAccount tx: %+v", result)
 
 		sourceAccount.Balance -= xdr.Int64(int64(startingBalance))
 		return &result
@@ -396,7 +407,7 @@ func getValidPaymentMutatorNative(sourceAccount *AccountEntry) MutatorGenerator 
 		result := build.Payment(build.Destination{destinationAccount.Keypair.GetSeed().Address()}, build.NativeAmount{amountString})
 		destinationAccount.Balance += xdr.Int64(payment)
 		sourceAccount.Balance -= xdr.Int64(payment)
-		Logger.Printf(logTag+"created Payment tx: %+v", result)
+		Logger.Printf("created Payment tx: %+v", result)
 		return result
 	}
 }
@@ -407,7 +418,7 @@ func getValidPaymentMutatorFromTrustline(sourceAccount *AccountEntry) MutatorGen
 		destinationAccount := getRandomAccount(database)
 		trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
 		availableAmount := min(int64(trustLine.Balance), int64(destTrustLine.Limit))
-		Logger.Printf(logTag+"amount of assets available for tx: %d", availableAmount)
+		Logger.Printf("amount of assets available for tx: %d", availableAmount)
 		amountString := amount.String(xdr.Int64(payment))
 		var paymentMut build.PaymentMutator
 		if trustLine.Asset.Type == xdr.AssetTypeAssetTypeNative {
@@ -431,7 +442,7 @@ func getValidPaymentMutatorFromTrustline(sourceAccount *AccountEntry) MutatorGen
 			trustLine.Balance -= xdr.Int64(payment)
 		}
 		result := build.Payment(build.Destination{destinationAccount.Keypair.GetSeed().Address()}, paymentMut)
-		Logger.Printf(logTag+"created Payment tx: %+v", result)
+		Logger.Printf("created Payment tx: %+v", result)
 		return result
 	}
 }
