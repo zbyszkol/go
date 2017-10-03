@@ -243,23 +243,26 @@ const (
 )
 
 func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
+	const minimalOperation = baseFee + minimalBalance
+
 	sourceAccount := getRandomAccount(database)
 	sourceBalance := int64(sourceAccount.Balance)
 	availableAmount := sourceBalance - minimalBalance
-	if availableAmount == 0 {
+	if availableAmount <= 0 {
 		Logger.Print("account's balance lower than minimal balance")
 		return nil, sourceAccount
 	}
-	availableAmount = rand.Int63n(availableAmount)
-	Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
-	maximalNumberOfOperations := availableAmount / (baseFee + minimalBalance)
-	maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
-	if maximalNumberOfOperations < 1 {
+	if availableAmount < minimalOperation {
 		Logger.Print("account's balance is too small")
 		return nil, sourceAccount
 	}
+	availableAmount -= minimalOperation
+	availableAmount = rand.Int63n(availableAmount) + minimalOperation
+	Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
+	maximalNumberOfOperations := availableAmount / minimalOperation
+	maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
 	size := rand.Intn(int(maximalNumberOfOperations)) + 1
-	availableAmount -= int64(size) * (baseFee + minimalBalance)
+	availableAmount -= int64(size) * minimalOperation
 	balancePartition := GetRandomPartitionWithoutZeros(availableAmount, size)
 	Logger.Printf("balance's partition: %v", balancePartition)
 
@@ -277,7 +280,7 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	}
 	for _, value := range balancePartition {
 		generator := sampler.generators(sourceAccount)
-		mutator := generator(uint64(value + minimalBalance), database)
+		mutator := generator(uint64(value+minimalBalance), database)
 		if mutator == nil {
 			Logger.Printf("sampled a nil transaction mutator")
 			continue
@@ -505,10 +508,6 @@ func getRandomPartition(sum int64, size int, diffFunc func(sum int64, size int) 
 }
 
 func GetRandomPartitionWithZeros(sum int64, size int) []int64 {
-	return getRandomPartitionWithZeros(sum, size)
-}
-
-func getRandomPartitionWithZeros(sum int64, size int) []int64 {
 	diffFunc := func(sum int64, size int) Ints64 {
 		var differences Ints64 = make(Ints64, size)
 		for ix := 0; ix < size-1; ix++ {
@@ -521,12 +520,9 @@ func getRandomPartitionWithZeros(sum int64, size int) []int64 {
 }
 
 func GetRandomPartitionWithoutZeros(sum int64, size int) []int64 {
-	Logger.Printf("sum: %d", sum)
-	Logger.Printf("size: %d", size)
-	return getRandomPartitionWithoutZeros(sum, size)
-}
-
-func getRandomPartitionWithoutZeros(sum int64, size int) []int64 {
+	if sum == 0 {
+		return make([]int64, size)
+	}
 	if size < 1 {
 		return []int64{}
 	}
@@ -534,12 +530,12 @@ func getRandomPartitionWithoutZeros(sum int64, size int) []int64 {
 		return []int64{sum}
 	}
 	diffFunc := func(sum int64, size int) Ints64 {
-		return append(getUniformMofN(sum-1, size-1), sum)
+		return append(GetUniformMofN(sum-1, size-1), sum)
 	}
 	return getRandomPartition(sum, size, diffFunc)
 }
 
-func getUniformMofN(maxValue int64, size int) Ints64 {
+func GetUniformMofN(maxValue int64, size int) Ints64 {
 	var result Ints64 = make(Ints64, 0, size)
 	selected := map[int64]bool{}
 	for ix := int64(maxValue - int64(size) + 1); ix <= maxValue; ix++ {

@@ -7,6 +7,7 @@ import (
 	. "github.com/stellar/go/sampler"
 	"github.com/stellar/go/xdr"
 	"github.com/stellar/horizon/db2/core"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -32,7 +33,7 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 		panic("Unable to add the root account.")
 	}
 
-	for counter := 0; counter < 100; counter++ {
+	for counter := uint64(0); counter < math.MaxUint64; counter++ {
 		select {
 		case <-cancellation:
 			return
@@ -50,17 +51,17 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	database.BeginTransaction()
 	defer database.EndTransaction()
 
-	size := uint64(rand.Intn(100) + 1)
 	Logger.Printf("sampling data")
-	data, sourceAccount := sampler(size, database)
+	data, sourceAccount := sampler(1, database)
 	Logger.Printf("data sampled %+v", &data)
 	if data == nil || sourceAccount == nil {
 		Logger.Printf("unable to generate correct transaction, continuing...")
-		return errors.New("unable to generate correct transaction")
+		// return errors.New("unable to generate correct transaction")
+		return nil
 	}
 
 	Logger.Print("submitting tx")
-	submitResult, seqenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
+	submitResult, sequenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
 	if submitResult.Err != nil {
 		Logger.Printf("tx submit rejected: %s", submitResult.Err)
 		handleTransactionError(database, transactionResult)
@@ -70,7 +71,7 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	Logger.Print("tx submitted")
 
 	Logger.Print("waiting for tx to externalize (seqnum increase)")
-	newSequenceNum, seqError := seqenceUpdate()
+	newSequenceNum, seqError := sequenceUpdate()
 	if seqError != nil {
 		// TODO clean up - there are at least two sampler.go files
 		Logger.Print("error while checking if tx was externalized; downloading tx result")
@@ -138,7 +139,7 @@ func main() {
 	// return
 
 	postgresConnectionString := flag.String("pg", "dbname=core host=localhost user=stellar password=__PGPASS__", "PostgreSQL connection string")
-	stellarCoreUrl := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
+	stellarCoreURL := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
 	flag.Parse()
 
 	var cancellation chan struct{} = make(chan struct{}, 2)
@@ -149,5 +150,5 @@ func main() {
 
 	setupSignalHandler(cancellation)
 
-	samplerLoop(*postgresConnectionString, *stellarCoreUrl, cancellation)
+	samplerLoop(*postgresConnectionString, *stellarCoreURL, cancellation)
 }
