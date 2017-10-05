@@ -19,18 +19,18 @@ type AccountEntry struct {
 	Keypair SeedProvider
 }
 
-func (entry *AccountEntry) SetAccountEntry(xdrEntry *xdr.AccountEntry) *AccountEntry {
-	entry.AccountEntry = *xdrEntry
-	return entry
-}
-
-func (entry *AccountEntry) GetAccountEntry() *xdr.AccountEntry {
-	return &entry.AccountEntry
-}
-
 type TrustLineEntry struct {
 	xdr.TrustLineEntry
 	Keypair SeedProvider
+}
+
+type Full struct{ keypair.Full }
+
+type Uint64 uint64
+
+type SequenceInitilizer struct {
+	account     *AccountEntry
+	seqProvider SequenceNumberFetcher
 }
 
 type SeedProvider interface {
@@ -42,6 +42,37 @@ type SequenceManager interface {
 	SetSequence(build.Sequence)
 }
 
+func (entry *AccountEntry) SetAccountEntry(xdrEntry *xdr.AccountEntry) *AccountEntry {
+	entry.AccountEntry = *xdrEntry
+	return entry
+}
+
+func (entry *AccountEntry) GetAccountEntry() *xdr.AccountEntry {
+	return &entry.AccountEntry
+}
+
+func (value *SequenceInitilizer) GetSequence() (build.Sequence, error) {
+	Logger.Print("fetching sequence number")
+	var result build.Sequence
+	var error error
+	result, error = value.seqProvider.FetchSequenceNumber(value.account.Keypair.GetSeed())
+	if error != nil {
+		Logger.Printf("error while fetching a sequence number: %v", error)
+		return result, error
+	}
+	if result.Sequence != 0 {
+		provider := Uint64(result.Sequence)
+		Logger.Printf("sequence number fetched (%+v), changing provider", provider)
+		value.account.SequenceManager = &provider
+	}
+	return result, nil
+}
+
+func (value *SequenceInitilizer) SetSequence(seq build.Sequence) {
+	newValue := Uint64(seq.Sequence)
+	value.account.SequenceManager = &newValue
+}
+
 func (value *Uint64) GetSequence() (build.Sequence, error) {
 	return build.Sequence{uint64(*value)}, nil
 }
@@ -50,40 +81,12 @@ func (value *Uint64) SetSequence(newValue build.Sequence) {
 	*value = Uint64(newValue.Sequence)
 }
 
-type SequenceInitilizer struct {
-	account     *AccountEntry
-	seqProvider SequenceNumberFetcher
-}
-
-func (value *SequenceInitilizer) GetSequence() (build.Sequence, error) {
-	Logger.Print("fetching sequence number")
-	var result build.Sequence
-	seq, error := value.seqProvider.FetchSequenceNumber(value.account.Keypair.GetSeed())
-	if error != nil {
-		Logger.Printf("error while fetching a sequence number: %v", error)
-		return result, nil
-	}
-	provider := Uint64(seq.Sequence)
-	Logger.Printf("sequence number fetched, changing provider")
-	value.account.SequenceManager = &provider
-	return seq, nil
-}
-
-func (value *SequenceInitilizer) SetSequence(seq build.Sequence) {
-	newValue := Uint64(seq.Sequence)
-	value.account.SequenceManager = &newValue
-}
-
-type Uint64 uint64
-
 func (seed Uint64) GetSeed() *Full {
 	var bytesData [32]byte
 	binary.LittleEndian.PutUint64(bytesData[:], uint64(seed))
 	result := Full(*fromRawSeed(bytesData))
 	return &result
 }
-
-type Full struct{ keypair.Full }
 
 func (full *Full) GetSeed() *Full {
 	return full
@@ -103,22 +106,27 @@ type Database interface {
 	AddTrustLine(*TrustLineEntry)
 }
 
+var rootAccount AccountEntry = AccountEntry{}
+
 func AddRootAccount(database Database, accountFetcher AccountFetcher, sequenceProvider SequenceNumberFetcher) (Database, error) {
+	database.BeginTransaction()
+	defer database.EndTransaction()
 	rootSeed := "SDHOAMBNLGCE2MV5ZKIVZAQD3VCLGP53P3OBSBI6UN5L5XZI5TKHFQL4"
 	fullKP := fromRawSeed(seedStringToBytes(rootSeed))
 	coreAccount, fetchError := accountFetcher.FetchAccount(fullKP)
 	if fetchError != nil {
+		database.RejectTransaction()
 		return database, fetchError
-		// errors.New("error while fetching the sequence number for the root account: ")
 	}
-	rootSequenceNumber, seqError := sequenceProvider.FetchSequenceNumber(fullKP)
-	if seqError != nil {
-		return database, seqError
-	}
-	rootAccount := &AccountEntry{Keypair: fullKP}
+	rootAccount.Keypair = fullKP
 	rootAccount.Balance = coreAccount.Balance
-	rootAccount.SeqNum = xdr.SequenceNumber(rootSequenceNumber.Sequence)
-	return database.AddAccount(rootAccount), nil
+	seqManager := Uint64(0)
+	rootAccount.SequenceManager = &seqManager
+	database = database.AddAccount(&rootAccount)
+
+	// mutator := getValidCreateAccountMutator(rootAccount)
+
+	return database, nil
 }
 
 func seedStringToBytes(seed string) [32]byte {
@@ -131,19 +139,11 @@ func sliceToFixedArray(data []byte) [32]byte {
 	return resultArray
 }
 
-type tuple struct {
-	old AccountEntry
-	new *AccountEntry
-}
-
 type InMemoryDatabase struct {
 	orderedData       *circularBuffer.CircularBuffer
 	mappedData        map[string]*AccountEntry
 	orderedTrustlines *circularBuffer.CircularBuffer
 	sequenceProvider  SequenceNumberFetcher
-	// backup            []tuple
-	// added             []*AccountEntry
-	// mappedTrustlines  map[string]*TrustLineEntry
 }
 
 func NewInMemoryDatabase(sequenceFetcher SequenceNumberFetcher) Database {
@@ -152,11 +152,9 @@ func NewInMemoryDatabase(sequenceFetcher SequenceNumberFetcher) Database {
 }
 
 func (data *InMemoryDatabase) BeginTransaction() {
-	// data.backup = []AccountEntry{}
 }
 
 func (data *InMemoryDatabase) EndTransaction() {
-	// data.backup = []AccountEntry{}
 }
 
 func (data *InMemoryDatabase) RejectTransaction() {
@@ -190,8 +188,9 @@ func (data *InMemoryDatabase) AddAccount(account *AccountEntry) Database {
 		removedAccount := removed.(*AccountEntry)
 		delete(data.mappedData, removedAccount.Keypair.GetSeed().Address())
 	}
-	account.SequenceManager = &SequenceInitilizer{account: account, seqProvider: data.sequenceProvider}
-	// TODO add data to remove account
+	if account.SequenceManager == nil {
+		account.SequenceManager = &SequenceInitilizer{account: account, seqProvider: data.sequenceProvider}
+	}
 	return data
 }
 
@@ -237,15 +236,32 @@ func NewTransactionGenerator() TransactionGenerator {
 }
 
 const (
-	baseFee        int64 = 100
-	baseReserve    int64 = 10 * amount.One
-	minimalBalance int64 = 2 * baseReserve
+	baseFee          int64 = 100
+	baseReserve      int64 = 10 * amount.One
+	minimalBalance   int64 = 2 * baseReserve
+	minimalOperation       = baseFee + minimalBalance
 )
 
-func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
-	const minimalOperation = baseFee + minimalBalance
+func isRoot(account *AccountEntry) bool {
+	return account == &rootAccount
+}
 
-	sourceAccount := getRandomAccount(database)
+func getRandomAccountWithNonZeroSequence(database Database) *AccountEntry {
+	for {
+		account := getRandomAccount(database)
+		seq, error := account.GetSequence()
+		if error == nil && (seq.Sequence > 0 || isRoot(account)) {
+			Logger.Printf("found an account with non-zero sequence: %s", account)
+			return account
+		}
+	}
+	return nil
+}
+
+func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
+	sourceAccount := getRandomAccountWithNonZeroSequence(database)
+	// TODO get an account with different than 0 sequence number
+	Logger.Printf("using following source account: %s", sourceAccount.Keypair.GetSeed())
 	sourceBalance := int64(sourceAccount.Balance)
 	availableAmount := sourceBalance - minimalBalance
 	if availableAmount <= 0 {
@@ -314,7 +330,7 @@ func ApplyChanges(changes *xdr.TransactionMeta, database Database) Database {
 func handleEntryCreated(data xdr.LedgerEntryData, database Database) Database {
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
-		publicKey := RawKeyToString(*data.Account.AccountId.Ed25519)
+		publicKey := rawKeyToString(*data.Account.AccountId.Ed25519)
 		accountEntry := database.GetAccountByAddress(publicKey)
 		accountEntry.SetAccountEntry(data.Account)
 	case xdr.LedgerEntryTypeTrustline:
@@ -331,7 +347,7 @@ func fromRawSeed(seed [32]byte) *Full {
 func handleEntryUpdated(data xdr.LedgerEntryData, database Database) Database {
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
-		publicKey := RawKeyToString(*data.Account.AccountId.Ed25519)
+		publicKey := rawKeyToString(*data.Account.AccountId.Ed25519)
 		accountEntry := database.GetAccountByAddress(publicKey)
 		accountEntry.SetAccountEntry(data.Account)
 	case xdr.LedgerEntryTypeTrustline:
@@ -364,6 +380,8 @@ func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) 
 func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(startingBalance uint64, database Database) build.TransactionMutator {
 		destinationKeypair := getNextKeypair() // generateRandomKeypair()
+		Logger.Printf("generated account for CreateAccount operation: %s", destinationKeypair.GetSeed())
+		// TODO set seqnum to ledgernum << 32
 		destination := build.Destination{destinationKeypair.GetSeed().Address()}
 		amount := build.NativeAmount{amount.String(xdr.Int64(startingBalance))}
 
@@ -390,11 +408,11 @@ func generateRandomKeypair() *keypair.Full {
 	return keypair
 }
 
-func fullKeypairToRawBytes(full *keypair.Full) [32]byte {
-	return sliceToFixedArray(strkey.MustDecode(strkey.VersionByteSeed, full.Seed()))
-}
+// func fullKeypairToRawBytes(full *keypair.Full) [32]byte {
+// 	return sliceToFixedArray(strkey.MustDecode(strkey.VersionByteSeed, full.Seed()))
+// }
 
-func RawKeyToString(key [32]byte) string {
+func rawKeyToString(key [32]byte) string {
 	return strkey.MustEncode(strkey.VersionByteSeed, key[:])
 }
 
@@ -434,10 +452,10 @@ func getValidPaymentMutatorFromTrustline(sourceAccount *AccountEntry) MutatorGen
 			var code, issuer string
 			if asset.Type == xdr.AssetTypeAssetTypeCreditAlphanum4 {
 				code = bytesToString(asset.AlphaNum4.AssetCode[:])
-				issuer = RawKeyToString(*asset.AlphaNum4.Issuer.Ed25519)
+				issuer = rawKeyToString(*asset.AlphaNum4.Issuer.Ed25519)
 			} else if asset.Type == xdr.AssetTypeAssetTypeCreditAlphanum12 {
 				code = bytesToString(asset.AlphaNum4.AssetCode[:])
-				issuer = RawKeyToString(*asset.AlphaNum4.Issuer.Ed25519)
+				issuer = rawKeyToString(*asset.AlphaNum4.Issuer.Ed25519)
 			}
 			paymentMut = build.CreditAmount{Code: code, Issuer: issuer, Amount: amountString}
 

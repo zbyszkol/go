@@ -7,7 +7,6 @@ import (
 	. "github.com/stellar/go/sampler"
 	"github.com/stellar/go/xdr"
 	"github.com/stellar/horizon/db2/core"
-	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -18,9 +17,9 @@ import (
 
 const Debug bool = true
 
-func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}) {
+func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}, txRate uint32) {
 	httpClient := http.DefaultClient
-	httpClient.Timeout = time.Duration(time.Second)
+	httpClient.Timeout = time.Duration(10 * time.Second)
 	var submitter TxSubmitter
 	var accountFetcher AccountFetcher
 	var sequenceFetcher SequenceNumberFetcher
@@ -33,16 +32,19 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 		panic("Unable to add the root account.")
 	}
 
-	for counter := uint64(0); counter < math.MaxUint64; counter++ {
+	ticker := time.NewTicker(time.Second)
+	for {
+		for it := uint32(0); it < txRate; it++ {
+			txError := singleTransaction(database, submitter, sampler)
+			if txError != nil {
+				Logger.Printf("error while committing a transaction: %s", txError)
+				return
+			}
+		}
 		select {
 		case <-cancellation:
 			return
-		default:
-		}
-		txError := singleTransaction(database, submitter, sampler)
-		if txError != nil {
-			Logger.Printf("error while committing a transaction: %s", txError)
-			return
+		case <-ticker.C:
 		}
 	}
 }
@@ -56,8 +58,7 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	Logger.Printf("data sampled %+v", &data)
 	if data == nil || sourceAccount == nil {
 		Logger.Printf("unable to generate correct transaction, continuing...")
-		// return errors.New("unable to generate correct transaction")
-		return nil
+		return errors.New("unable to generate correct transaction")
 	}
 
 	Logger.Print("submitting tx")
@@ -69,11 +70,11 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 		return errors.New("tx submit rejected")
 	}
 	Logger.Print("tx submitted")
+	return nil
 
 	Logger.Print("waiting for tx to externalize (seqnum increase)")
 	newSequenceNum, seqError := sequenceUpdate()
 	if seqError != nil {
-		// TODO clean up - there are at least two sampler.go files
 		Logger.Print("error while checking if tx was externalized; downloading tx result")
 		handleTransactionError(database, transactionResult)
 
@@ -150,5 +151,5 @@ func main() {
 
 	setupSignalHandler(cancellation)
 
-	samplerLoop(*postgresConnectionString, *stellarCoreURL, cancellation)
+	samplerLoop(*postgresConnectionString, *stellarCoreURL, cancellation, 50)
 }

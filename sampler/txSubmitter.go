@@ -31,11 +31,16 @@ type SequenceProvider struct {
 func (provider *SequenceProvider) FetchSequenceNumber(address keypair.KP) (build.Sequence, error) {
 	var result build.Sequence
 	addressString := address.Address()
-	results, error := provider.SequenceProvider.Get([]string{addressString})
+	sequences, error := provider.SequenceProvider.Get([]string{addressString})
 	if error != nil {
 		return result, error
 	}
-	result.Sequence = results[addressString]
+	var ok bool
+	result.Sequence, ok = sequences[addressString]
+	if !ok {
+		return result, errors.New("missing sequence number")
+	}
+	Logger.Printf("fetched sequence number (%+v) for account %s", result, address)
 	return result, nil
 }
 
