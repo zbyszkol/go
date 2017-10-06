@@ -1,8 +1,9 @@
 package main
 
 import (
-	"errors"
+	"github.com/stellar/horizon/txsub"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	. "github.com/stellar/go/sampler"
@@ -77,7 +78,7 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	submitResult, sequenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
 	if submitResult.Err != nil {
 		Logger.Printf("tx submit rejected: %s", submitResult.Err)
-		handleTransactionError(database, transactionResult)
+		database = handleTransactionError(database, transactionResult)
 
 		return operationsCount, errors.New("tx submit rejected")
 	}
@@ -88,19 +89,20 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	newSequenceNum, seqError := sequenceUpdate()
 	if seqError != nil {
 		Logger.Print("error while checking if tx was externalized; downloading tx result")
-		handleTransactionError(database, transactionResult)
+		database = handleTransactionError(database, transactionResult)
 
 		return operationsCount, errors.New("error while checking if tx was externalized")
 	}
 	sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
 
 	if Debug {
-		txResult, txError := transactionResult()
-		if txError != nil {
-			Logger.Printf("error while downloading tx result: %+v", txError)
-		} else {
-			Logger.Printf("tx result: %+v", txResult)
-		}
+		// txResult, txError := transactionResult()
+		// if txError != nil {
+		// 	Logger.Printf("error while downloading tx result: %+v", txError)
+		// } else {
+		// 	Logger.Printf("tx result: %+v", txResult)
+		// }
+		database = handleTransactionError(database, transactionResult)
 	}
 
 	Logger.Print("tx externalized, finishing")
@@ -149,6 +151,7 @@ func test() {
 
 func failureDetector(postgresConnectionString string) {
 	coreDb := NewDbSession(postgresConnectionString)
+	// TODO move this magic number as a parameter
 	iterator := NewTxResultIterator(FindFailedTransactions(coreDb, 700))
 	noError := true
 	for hasNext, error := iterator.Next(); hasNext; hasNext, error = iterator.Next() {
@@ -157,19 +160,61 @@ func failureDetector(postgresConnectionString string) {
 			Logger.Printf("error while iterating transactions: %s", error)
 		}
 		tx := iterator.Get()
-		txXdr, error := TxResultXdrToObject(tx.ResultXDR)
-		if error != nil {
-			fmt.Printf("error while unmarshalling txResult: %s", error)
-			continue
-		}
 		fmt.Println("------------------------")
-		PrintTxResult(txXdr.Result)
+		PrintTxErrors(*tx)
 		fmt.Println()
 		fmt.Println("------------------------")
 	}
 	if noError {
 		fmt.Println("no tx error")
 	}
+}
+
+func PrintTxErrors(result txsub.Result) {
+	var xdrResult xdr.TransactionResult
+	resultError := xdr.SafeUnmarshalBase64(result.ResultXDR, &xdrResult)
+	if resultError != nil {
+
+	}
+	var envelope xdr.TransactionEnvelope
+	envError := xdr.SafeUnmarshalBase64(result.EnvelopeXDR, &envelope)
+	if envError != nil {
+
+	}
+	PrintErrors(xdrResult, envelope)
+}
+
+func PrintErrors(result xdr.TransactionResult, envelope xdr.TransactionEnvelope) {
+	var val1, val2 string
+	for ix, value := range *result.Result.Results {
+		resultTr := value.Tr
+		switch resultTr.Type {
+		case xdr.OperationTypeCreateAccount: {
+			if resultTr.CreateAccountResult.Code != xdr.CreateAccountResultCodeCreateAccountSuccess {
+				createOp := envelope.Tx.Operations[ix].Body.CreateAccountOp
+				val1 = "Create account\n" + toString(resultTr.CreateAccountResult)
+				val2 = toString(createOp)
+			}
+		}
+		case xdr.OperationTypePayment: {
+			if resultTr.PaymentResult.Code != xdr.PaymentResultCodePaymentSuccess {
+				paymentOp := envelope.Tx.Operations[ix].Body.PaymentOp
+				val1 = "Payment\n" + toString(resultTr.PaymentResult)
+				val2 = toString(paymentOp)
+			}
+		}
+		}
+		fmt.Println("-----")
+		fmt.Println(val1)
+		fmt.Println("###")
+		fmt.Println(val2)
+		fmt.Println("-----")
+	}
+}
+
+func toString(value interface{}) string {
+	b, _ := json.MarshalIndent(value, "", "  ")
+	return string(b)
 }
 
 func PrintTxResult(result xdr.TransactionResultResult) {

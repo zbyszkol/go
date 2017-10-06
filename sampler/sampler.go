@@ -52,7 +52,7 @@ func (entry *AccountEntry) GetAccountEntry() *xdr.AccountEntry {
 }
 
 func (value *SequenceInitilizer) GetSequence() (build.Sequence, error) {
-	Logger.Print("fetching sequence number")
+	Logger.Print("fetching sequence number for account %s", value.account.Keypair.GetSeed())
 	var result build.Sequence
 	var error error
 	result, error = value.seqProvider.FetchSequenceNumber(value.account.Keypair.GetSeed())
@@ -238,13 +238,6 @@ func DefaultTransactionGenerator() TransactionGenerator {
 	return NewTransactionGenerator(accountGenerator, paymentGenerator)
 }
 
-const (
-	baseFee          int64 = 100
-	baseReserve      int64 = 10 * amount.One
-	minimalBalance   int64 = 2 * baseReserve
-	minimalOperation       = baseFee + minimalBalance
-)
-
 func isRoot(account *AccountEntry) bool {
 	return account == &rootAccount
 }
@@ -260,6 +253,13 @@ func getRandomAccountWithNonZeroSequence(database Database) *AccountEntry {
 	}
 	return nil
 }
+
+const (
+	baseFee          int64 = 100
+	baseReserve      int64 = 10 * amount.One
+	minimalBalance   int64 = 2 * baseReserve
+	minimalOperation       = baseFee + minimalBalance
+)
 
 var txRand = rand.New(rand.NewSource(0))
 var opRand = rand.New(rand.NewSource(0))
@@ -278,13 +278,12 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 			continue
 			// return nil, sourceAccount
 		}
-		if availableAmount < minimalOperation {
+		if availableAmount <= minimalOperation {
 			Logger.Print("account's balance is too small")
 			continue
 			// return nil, sourceAccount
 		}
-		availableAmount -= minimalOperation
-		availableAmount = txRand.Int63n(availableAmount) + minimalOperation
+		availableAmount = txRand.Int63n(availableAmount-minimalOperation) + minimalOperation
 		Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
 		maximalNumberOfOperations := availableAmount / minimalOperation
 		maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
@@ -342,10 +341,12 @@ func ApplyChanges(changes *xdr.TransactionMeta, database Database) Database {
 }
 
 func handleEntryCreated(data xdr.LedgerEntryData, database Database) Database {
+	Logger.Print("handle entry created")
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
 		publicKey := rawKeyToString(*data.Account.AccountId.Ed25519)
 		accountEntry := database.GetAccountByAddress(publicKey)
+		Logger.Printf("created entry already in database: %s, %v", publicKey, accountEntry != nil)
 		accountEntry.SetAccountEntry(data.Account)
 	case xdr.LedgerEntryTypeTrustline:
 		// TODO
@@ -359,6 +360,7 @@ func fromRawSeed(seed [32]byte) *Full {
 }
 
 func handleEntryUpdated(data xdr.LedgerEntryData, database Database) Database {
+	Logger.Print("handle entry updated")
 	switch data.Type {
 	case xdr.LedgerEntryTypeAccount:
 		publicKey := rawKeyToString(*data.Account.AccountId.Ed25519)
@@ -396,7 +398,7 @@ func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) 
 func GetValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(startingBalance uint64, database Database) build.TransactionMutator {
 		destinationKeypair := getNextKeypair() // generateRandomKeypair()
-		Logger.Printf("generated account for CreateAccount operation: %s", destinationKeypair.GetSeed())
+		Logger.Printf("generated account for CreateAccount operation: seed - %s, public - %s", destinationKeypair.GetSeed(), destinationKeypair.GetSeed().Address())
 		// TODO set seqnum to ledgernum << 32
 		destination := build.Destination{destinationKeypair.GetSeed().Address()}
 		amount := build.NativeAmount{amount.String(xdr.Int64(startingBalance))}
@@ -429,7 +431,7 @@ func generateRandomKeypair() *keypair.Full {
 // }
 
 func rawKeyToString(key [32]byte) string {
-	return strkey.MustEncode(strkey.VersionByteSeed, key[:])
+	return strkey.MustEncode(strkey.VersionByteAccountID, key[:])
 }
 
 func bytesToString(data []byte) string {
