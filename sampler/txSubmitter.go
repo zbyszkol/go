@@ -134,13 +134,13 @@ func waitForNewSequenceNumber(sequenceProvider SequenceNumberFetcher, account *A
 
 func NewTxSubmitter(h *http.Client, url, psqlConnectionString string) (TxSubmitter, AccountFetcher, SequenceNumberFetcher) {
 	submitter := txsub.NewDefaultSubmitter(h, url)
-	coreDb := newDbSession(psqlConnectionString)
+	coreDb := NewDbSession(psqlConnectionString)
 	seqProvider := &SequenceProvider{coreDb.SequenceProvider()}
 	result := &txSubmitter{core: coreDb, submitter: submitter, sequenceProvider: seqProvider}
 	return result, result, result
 }
 
-func newDbSession(psqlConnectionString string) *core.Q {
+func NewDbSession(psqlConnectionString string) *core.Q {
 	session, err := db.Open("postgres", psqlConnectionString)
 
 	if err != nil {

@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"encoding/json"
 	"flag"
 	"fmt"
 	. "github.com/stellar/go/sampler"
+	. "github.com/stellar/go/sampler/failureDetector"
 	"github.com/stellar/go/xdr"
 	"github.com/stellar/horizon/db2/core"
 	"math/rand"
@@ -17,14 +19,21 @@ import (
 
 const Debug bool = true
 
-func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}, txRate uint32) {
+func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}, txRate, numberOfOperations, expectedNumberOfAccounts uint) {
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(10 * time.Second)
 	var submitter TxSubmitter
 	var accountFetcher AccountFetcher
 	var sequenceFetcher SequenceNumberFetcher
 	submitter, accountFetcher, sequenceFetcher = NewTxSubmitter(httpClient, stellarCoreUrl, postgresqlConnection)
-	var sampler TransactionGenerator = NewTransactionGenerator()
+	// var sampler TransactionGenerator = DefaultTransactionGenerator()
+
+	var accountProbability = uint((float64(expectedNumberOfAccounts) / float64(numberOfOperations)) * 100)
+	Logger.Printf("account's probability: %d", accountProbability)
+	accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: accountProbability}
+	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100 - accountProbability}
+	var sampler TransactionGenerator = NewTransactionGenerator(accountGenerator, paymentGenerator)
+
 	var database Database = NewInMemoryDatabase(sequenceFetcher)
 
 	database, rootError := AddRootAccount(database, accountFetcher, sequenceFetcher)
@@ -33,12 +42,14 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 	}
 
 	ticker := time.NewTicker(time.Second)
-	for {
-		for it := uint32(0); it < txRate; it++ {
-			txError := singleTransaction(database, submitter, sampler)
+	var operationsCounter uint = 0
+	for operationsCounter < numberOfOperations {
+		for it := uint(0); it < txRate; it++ {
+			operationsCount, txError := singleTransaction(database, submitter, sampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
-				return
+			} else {
+				operationsCounter += operationsCount
 			}
 		}
 		select {
@@ -49,7 +60,8 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 	}
 }
 
-func singleTransaction(database Database, submitter TxSubmitter, sampler TransactionGenerator) error {
+func singleTransaction(database Database, submitter TxSubmitter, sampler TransactionGenerator) (uint, error) {
+	var operationsCount uint = 0
 	database.BeginTransaction()
 	defer database.EndTransaction()
 
@@ -58,19 +70,19 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	Logger.Printf("data sampled %+v", &data)
 	if data == nil || sourceAccount == nil {
 		Logger.Printf("unable to generate correct transaction, continuing...")
-		return errors.New("unable to generate correct transaction")
+		return operationsCount, errors.New("unable to generate correct transaction")
 	}
-
+	operationsCount = uint(len(data.TX.Operations))
 	Logger.Print("submitting tx")
 	submitResult, sequenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
 	if submitResult.Err != nil {
 		Logger.Printf("tx submit rejected: %s", submitResult.Err)
 		handleTransactionError(database, transactionResult)
 
-		return errors.New("tx submit rejected")
+		return operationsCount, errors.New("tx submit rejected")
 	}
 	Logger.Print("tx submitted")
-	return nil
+	return operationsCount, nil
 
 	Logger.Print("waiting for tx to externalize (seqnum increase)")
 	newSequenceNum, seqError := sequenceUpdate()
@@ -78,7 +90,7 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 		Logger.Print("error while checking if tx was externalized; downloading tx result")
 		handleTransactionError(database, transactionResult)
 
-		return errors.New("error while checking if tx was externalized")
+		return operationsCount, errors.New("error while checking if tx was externalized")
 	}
 	sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
 
@@ -92,7 +104,7 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	}
 
 	Logger.Print("tx externalized, finishing")
-	return nil
+	return operationsCount, nil
 }
 
 func handleTransactionError(database Database, transactionResult func() (*core.Transaction, error)) Database {
@@ -135,6 +147,41 @@ func test() {
 	fmt.Println(testData)
 }
 
+func failureDetector(postgresConnectionString string) {
+	coreDb := NewDbSession(postgresConnectionString)
+	iterator := NewTxResultIterator(FindFailedTransactions(coreDb, 700))
+	noError := true
+	for hasNext, error := iterator.Next(); hasNext; hasNext, error = iterator.Next() {
+		noError = false
+		if error != nil {
+			Logger.Printf("error while iterating transactions: %s", error)
+		}
+		tx := iterator.Get()
+		txXdr, error := TxResultXdrToObject(tx.ResultXDR)
+		if error != nil {
+			fmt.Printf("error while unmarshalling txResult: %s", error)
+			continue
+		}
+		fmt.Println("------------------------")
+		PrintTxResult(txXdr.Result)
+		fmt.Println()
+		fmt.Println("------------------------")
+	}
+	if noError {
+		fmt.Println("no tx error")
+	}
+}
+
+func PrintTxResult(result xdr.TransactionResultResult) {
+	fmt.Printf("Code: %d", result.Code)
+	fmt.Println()
+	for _, value := range *result.Results {
+		b, _ := json.MarshalIndent(value.Tr, "", "  ")
+		fmt.Println("Result:")
+		fmt.Println(string(b))
+	}
+}
+
 func main() {
 	// test()
 	// return
@@ -142,6 +189,9 @@ func main() {
 	postgresConnectionString := flag.String("pg", "dbname=core host=localhost user=stellar password=__PGPASS__", "PostgreSQL connection string")
 	stellarCoreURL := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
 	flag.Parse()
+
+	failureDetector(*postgresConnectionString)
+	return
 
 	var cancellation chan struct{} = make(chan struct{}, 2)
 	defer func() {
@@ -151,5 +201,7 @@ func main() {
 
 	setupSignalHandler(cancellation)
 
-	samplerLoop(*postgresConnectionString, *stellarCoreURL, cancellation, 50)
+	const txRate, numberOfOperations, expectedNumberOfAccounts uint = 10, 1000000, 10000
+
+	samplerLoop(*postgresConnectionString, *stellarCoreURL, cancellation, txRate, numberOfOperations, expectedNumberOfAccounts)
 }

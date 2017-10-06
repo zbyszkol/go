@@ -214,25 +214,28 @@ type TransactionGenerator func(uint64, Database) (*build.TransactionBuilder, *Ac
 
 type MutatorGenerator func(uint64, Database) build.TransactionMutator
 
-type generatorsListEntry struct {
-	generator func(*AccountEntry) MutatorGenerator
-	bias      uint32
+type GeneratorsListEntry struct {
+	Generator func(*AccountEntry) MutatorGenerator
+	Bias      uint
 }
 
-type generatorsList []generatorsListEntry
+type generatorsList []GeneratorsListEntry
 
 type TransactionsSampler struct {
 	generators func(*AccountEntry) MutatorGenerator
 }
 
-func NewTransactionGenerator() TransactionGenerator {
-	accountGenerator := generatorsListEntry{generator: getValidCreateAccountMutator, bias: 50}
-	paymentGenerator := generatorsListEntry{generator: getValidPaymentMutatorNative, bias: 50}
-	generatorsList := []generatorsListEntry{accountGenerator, paymentGenerator}
-	sampler := &TransactionsSampler{generators: getRandomGeneratorWrapper(generatorsList)}
+func NewTransactionGenerator(generators ...GeneratorsListEntry) TransactionGenerator {
+	sampler := &TransactionsSampler{generators: getRandomGeneratorWrapper(generators)}
 	return func(size uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
 		return sampler.Generate(size, database)
 	}
+}
+
+func DefaultTransactionGenerator() TransactionGenerator {
+	accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: 50}
+	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 50}
+	return NewTransactionGenerator(accountGenerator, paymentGenerator)
 }
 
 const (
@@ -258,56 +261,67 @@ func getRandomAccountWithNonZeroSequence(database Database) *AccountEntry {
 	return nil
 }
 
+var txRand = rand.New(rand.NewSource(0))
+var opRand = rand.New(rand.NewSource(0))
+
 func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*build.TransactionBuilder, *AccountEntry) {
-	sourceAccount := getRandomAccountWithNonZeroSequence(database)
-	// TODO get an account with different than 0 sequence number
-	Logger.Printf("using following source account: %s", sourceAccount.Keypair.GetSeed())
-	sourceBalance := int64(sourceAccount.Balance)
-	availableAmount := sourceBalance - minimalBalance
-	if availableAmount <= 0 {
-		Logger.Print("account's balance lower than minimal balance")
-		return nil, sourceAccount
-	}
-	if availableAmount < minimalOperation {
-		Logger.Print("account's balance is too small")
-		return nil, sourceAccount
-	}
-	availableAmount -= minimalOperation
-	availableAmount = rand.Int63n(availableAmount) + minimalOperation
-	Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
-	maximalNumberOfOperations := availableAmount / minimalOperation
-	maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
-	size := rand.Intn(int(maximalNumberOfOperations)) + 1
-	availableAmount -= int64(size) * minimalOperation
-	balancePartition := GetRandomPartitionWithoutZeros(availableAmount, size)
-	Logger.Printf("balance's partition: %v", balancePartition)
-
-	seq, seqError := sourceAccount.GetSequence()
-	if seqError != nil {
-		Logger.Print("error while getting account's sequence number")
-		return nil, sourceAccount
-	}
-	seq.Sequence++
-	sourceAccount.SetSequence(seq)
-	operations := []build.TransactionMutator{
-		build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
-		seq,
-		build.TestNetwork,
-	}
-	for _, value := range balancePartition {
-		generator := sampler.generators(sourceAccount)
-		mutator := generator(uint64(value+minimalBalance), database)
-		if mutator == nil {
-			Logger.Printf("sampled a nil transaction mutator")
+	var transaction *build.TransactionBuilder
+	var sourceAccount *AccountEntry
+	for {
+		sourceAccount = getRandomAccountWithNonZeroSequence(database)
+		// TODO get an account with different than 0 sequence number
+		Logger.Printf("using following source account: %s", sourceAccount.Keypair.GetSeed())
+		sourceBalance := int64(sourceAccount.Balance)
+		availableAmount := sourceBalance - minimalBalance
+		if availableAmount <= 0 {
+			Logger.Print("account's balance lower than minimal balance")
 			continue
+			// return nil, sourceAccount
 		}
-		operations = append(operations, mutator)
-		sourceAccount.Balance -= xdr.Int64(baseFee)
-	}
+		if availableAmount < minimalOperation {
+			Logger.Print("account's balance is too small")
+			continue
+			// return nil, sourceAccount
+		}
+		availableAmount -= minimalOperation
+		availableAmount = txRand.Int63n(availableAmount) + minimalOperation
+		Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
+		maximalNumberOfOperations := availableAmount / minimalOperation
+		maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
+		size := opRand.Intn(int(maximalNumberOfOperations)) + 1
+		availableAmount -= int64(size) * minimalOperation
+		balancePartition := GetRandomPartitionWithoutZeros(availableAmount, size)
+		Logger.Printf("balance's partition: %v", balancePartition)
 
-	transaction := build.Transaction(
-		operations...,
-	)
+		seq, seqError := sourceAccount.GetSequence()
+		if seqError != nil {
+			Logger.Print("error while getting account's sequence number")
+			continue
+			// return nil, sourceAccount
+		}
+		seq.Sequence++
+		sourceAccount.SetSequence(seq)
+		operations := []build.TransactionMutator{
+			build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
+			seq,
+			build.TestNetwork,
+		}
+		for _, value := range balancePartition {
+			generator := sampler.generators(sourceAccount)
+			mutator := generator(uint64(value+minimalBalance), database)
+			if mutator == nil {
+				Logger.Printf("sampled a nil transaction mutator")
+				continue
+			}
+			operations = append(operations, mutator)
+			sourceAccount.Balance -= xdr.Int64(baseFee)
+		}
+
+		transaction = build.Transaction(
+			operations...,
+		)
+		break
+	}
 	return transaction, sourceAccount
 }
 
@@ -362,22 +376,24 @@ func getRandomGeneratorWrapper(generatorsList generatorsList) func(*AccountEntry
 	}
 }
 
+var genRand = rand.New(rand.NewSource(0))
+
 func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) MutatorGenerator {
 	var result MutatorGenerator
 	whole := 100
-	var randomCdf uint32 = uint32(rand.Intn(whole) + 1)
-	var cdf uint32 = 0
+	var randomCdf uint = uint(genRand.Intn(whole) + 1)
+	var cdf uint = 0
 	for _, value := range generators {
-		cdf += value.bias
+		cdf += value.Bias
 		if cdf >= randomCdf {
-			result = value.generator(sourceAccount)
+			result = value.Generator(sourceAccount)
 			break
 		}
 	}
 	return result
 }
 
-func getValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
+func GetValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(startingBalance uint64, database Database) build.TransactionMutator {
 		destinationKeypair := getNextKeypair() // generateRandomKeypair()
 		Logger.Printf("generated account for CreateAccount operation: %s", destinationKeypair.GetSeed())
@@ -420,14 +436,14 @@ func bytesToString(data []byte) string {
 	return strkey.MustEncode(strkey.VersionByteSeed, data)
 }
 
-func getValidPaymentMutatorNative(sourceAccount *AccountEntry) MutatorGenerator {
+func GetValidPaymentMutatorNative(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(payment uint64, database Database) build.TransactionMutator {
 		Logger.Printf("sampling a valid payment")
 		destinationAccount := getRandomAccount(database)
 		amountString := amount.String(xdr.Int64(payment))
 		result := build.Payment(build.Destination{destinationAccount.Keypair.GetSeed().Address()}, build.NativeAmount{amountString})
-		destinationAccount.Balance += xdr.Int64(payment)
 		sourceAccount.Balance -= xdr.Int64(payment)
+		destinationAccount.Balance += xdr.Int64(payment)
 		Logger.Printf("created Payment tx: %+v", result)
 		return result
 	}
@@ -491,8 +507,10 @@ func getRandomTrustLine(sourceAccount, destinationAccount *AccountEntry, databas
 	return myTrustLine, destinationTrustline
 }
 
+var accountRand = rand.New(rand.NewSource(0))
+
 func getRandomAccount(database Database) *AccountEntry {
-	return database.GetAccountByOrder(rand.Intn(database.GetAccountsCount()))
+	return database.GetAccountByOrder(accountRand.Intn(database.GetAccountsCount()))
 }
 
 type Ints64 []int64
@@ -525,11 +543,13 @@ func getRandomPartition(sum int64, size int, diffFunc func(sum int64, size int) 
 	return differences
 }
 
+var partitionRand = rand.New(rand.NewSource(0))
+
 func GetRandomPartitionWithZeros(sum int64, size int) []int64 {
 	diffFunc := func(sum int64, size int) Ints64 {
 		var differences Ints64 = make(Ints64, size)
 		for ix := 0; ix < size-1; ix++ {
-			differences[ix] = rand.Int63n(sum + 1)
+			differences[ix] = partitionRand.Int63n(sum + 1)
 		}
 		differences[size-1] = sum
 		return differences
@@ -553,11 +573,13 @@ func GetRandomPartitionWithoutZeros(sum int64, size int) []int64 {
 	return getRandomPartition(sum, size, diffFunc)
 }
 
+var mOfNRand = rand.New(rand.NewSource(0))
+
 func GetUniformMofN(maxValue int64, size int) Ints64 {
 	var result Ints64 = make(Ints64, 0, size)
 	selected := map[int64]bool{}
 	for ix := int64(maxValue - int64(size) + 1); ix <= maxValue; ix++ {
-		selectedValue := rand.Int63n(ix) + 1
+		selectedValue := mOfNRand.Int63n(ix) + 1
 		if selected[selectedValue] {
 			selectedValue = ix
 		}
@@ -567,11 +589,13 @@ func GetUniformMofN(maxValue int64, size int) Ints64 {
 	return result
 }
 
+var mOfNRandSlice = rand.New(rand.NewSource(0))
+
 func GetUniformMofNFromSlice(data []int, size int) []int {
 	var result []int = make([]int, 0, size)
 	selected := map[int]bool{}
 	for ix := len(data) - size; ix < len(data); ix++ {
-		selectedIndex := rand.Intn(ix)
+		selectedIndex := mOfNRandSlice.Intn(ix)
 		if selected[selectedIndex] {
 			selectedIndex = ix
 		}
