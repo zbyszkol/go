@@ -1,8 +1,6 @@
 package main
 
 import (
-	"github.com/stellar/horizon/txsub"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -118,6 +116,10 @@ func handleTransactionError(database Database, transactionResult func() (*core.T
 	} else {
 		Logger.Print("applying changes")
 		if coreResult != nil {
+			if !coreResult.IsSuccessful() {
+				Logger.Printf("transaction was failed")
+				panic("transaction was failed")
+			}
 			database = ApplyChanges(&coreResult.ResultMeta, database)
 		} else {
 			Logger.Printf("coreResult is nil")
@@ -152,7 +154,7 @@ func test() {
 func failureDetector(postgresConnectionString string) {
 	coreDb := NewDbSession(postgresConnectionString)
 	// TODO move this magic number as a parameter
-	iterator := NewTxResultIterator(FindFailedTransactions(coreDb, 700))
+	iterator := FindFailedTransactions(coreDb, 700)
 	noError := true
 	for hasNext, error := iterator.Next(); hasNext; hasNext, error = iterator.Next() {
 		noError = false
@@ -161,69 +163,12 @@ func failureDetector(postgresConnectionString string) {
 		}
 		tx := iterator.Get()
 		fmt.Println("------------------------")
-		PrintTxErrors(*tx)
+		PrintFailuresFromCoreTx(tx)
 		fmt.Println()
 		fmt.Println("------------------------")
 	}
 	if noError {
 		fmt.Println("no tx error")
-	}
-}
-
-func PrintTxErrors(result txsub.Result) {
-	var xdrResult xdr.TransactionResult
-	resultError := xdr.SafeUnmarshalBase64(result.ResultXDR, &xdrResult)
-	if resultError != nil {
-
-	}
-	var envelope xdr.TransactionEnvelope
-	envError := xdr.SafeUnmarshalBase64(result.EnvelopeXDR, &envelope)
-	if envError != nil {
-
-	}
-	PrintErrors(xdrResult, envelope)
-}
-
-func PrintErrors(result xdr.TransactionResult, envelope xdr.TransactionEnvelope) {
-	var val1, val2 string
-	for ix, value := range *result.Result.Results {
-		resultTr := value.Tr
-		switch resultTr.Type {
-		case xdr.OperationTypeCreateAccount: {
-			if resultTr.CreateAccountResult.Code != xdr.CreateAccountResultCodeCreateAccountSuccess {
-				createOp := envelope.Tx.Operations[ix].Body.CreateAccountOp
-				val1 = "Create account\n" + toString(resultTr.CreateAccountResult)
-				val2 = toString(createOp)
-			}
-		}
-		case xdr.OperationTypePayment: {
-			if resultTr.PaymentResult.Code != xdr.PaymentResultCodePaymentSuccess {
-				paymentOp := envelope.Tx.Operations[ix].Body.PaymentOp
-				val1 = "Payment\n" + toString(resultTr.PaymentResult)
-				val2 = toString(paymentOp)
-			}
-		}
-		}
-		fmt.Println("-----")
-		fmt.Println(val1)
-		fmt.Println("###")
-		fmt.Println(val2)
-		fmt.Println("-----")
-	}
-}
-
-func toString(value interface{}) string {
-	b, _ := json.MarshalIndent(value, "", "  ")
-	return string(b)
-}
-
-func PrintTxResult(result xdr.TransactionResultResult) {
-	fmt.Printf("Code: %d", result.Code)
-	fmt.Println()
-	for _, value := range *result.Results {
-		b, _ := json.MarshalIndent(value.Tr, "", "  ")
-		fmt.Println("Result:")
-		fmt.Println(string(b))
 	}
 }
 

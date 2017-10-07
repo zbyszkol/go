@@ -408,6 +408,7 @@ func GetValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator 
 		database.AddAccount(newAccount)
 		result := build.CreateAccount(destination, amount)
 		Logger.Printf("created CreateAccount tx: %+v", result)
+		Logger.Printf("created account's balance is %d", amount)
 
 		sourceAccount.Balance -= xdr.Int64(int64(startingBalance))
 		return &result
@@ -447,6 +448,7 @@ func GetValidPaymentMutatorNative(sourceAccount *AccountEntry) MutatorGenerator 
 		sourceAccount.Balance -= xdr.Int64(payment)
 		destinationAccount.Balance += xdr.Int64(payment)
 		Logger.Printf("created Payment tx: %+v", result)
+		Logger.Printf("%s created payment for account %s", sourceAccount.Keypair.GetSeed().Address(), destinationAccount.Keypair.GetSeed().Address())
 		return result
 	}
 }

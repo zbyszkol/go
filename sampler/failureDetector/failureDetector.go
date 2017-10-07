@@ -3,7 +3,10 @@ package failureDetector
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	. "github.com/stellar/go/sampler"
+	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/xdr"
 	"github.com/stellar/horizon/db2/core"
 	"github.com/stellar/horizon/txsub"
@@ -107,7 +110,7 @@ func (impl *transactionsIteratorImpl) Next() (bool, error) {
 		return true, nil
 	}
 	impl.inLedgerIx = 0
-	impl.txs = nil
+	impl.txs = []core.Transaction{}
 	for impl.ledgerNumber++; impl.ledgerNumber <= impl.toLedger; impl.ledgerNumber++ {
 		Logger.Printf("ledger number: %d", impl.ledgerNumber)
 		error := impl.core.TransactionsByLedger(&impl.txs, int32(impl.ledgerNumber))
@@ -183,4 +186,72 @@ func TxResultXdrToObject(xdrValue string) (*xdr.TransactionResult, error) {
 		return nil, error
 	}
 	return &result, nil
+}
+
+func PrintTxErrorsFromResult(result txsub.Result) {
+	var xdrResult xdr.TransactionResult
+	resultError := xdr.SafeUnmarshalBase64(result.ResultXDR, &xdrResult)
+	if resultError != nil {
+
+	}
+	var envelope xdr.TransactionEnvelope
+	envError := xdr.SafeUnmarshalBase64(result.EnvelopeXDR, &envelope)
+	if envError != nil {
+
+	}
+	PrintErrors(xdrResult, envelope)
+}
+
+func PrintFailuresFromCoreTx(tx *core.Transaction) {
+	fmt.Printf("Ledger Sequence: %d", tx.LedgerSequence)
+	fmt.Println()
+	fmt.Printf("Index: %d", tx.Index)
+	fmt.Println()
+	PrintErrors(tx.Result.Result, tx.Envelope)
+}
+
+func AccountIdToString(id xdr.AccountId) string {
+	return strkey.MustEncode(strkey.VersionByteAccountID, (*id.Ed25519)[:])
+}
+
+func PrintErrors(result xdr.TransactionResult, envelope xdr.TransactionEnvelope) {
+	var val1, val2 string
+	for ix, value := range *result.Result.Results {
+		resultTr := value.Tr
+		switch resultTr.Type {
+		case xdr.OperationTypeCreateAccount:
+			{
+				if resultTr.CreateAccountResult.Code != xdr.CreateAccountResultCodeCreateAccountSuccess {
+					createOp := envelope.Tx.Operations[ix].Body.CreateAccountOp
+					val1 = "Create account:\n" + toString(resultTr.CreateAccountResult)
+					val2 = toString(createOp)
+					val2 += "\nSource Account: " + AccountIdToString(envelope.Tx.SourceAccount)
+					val2 += "\nNew Account: " + AccountIdToString(createOp.Destination)
+				}
+			}
+		case xdr.OperationTypePayment:
+			{
+				if resultTr.PaymentResult.Code != xdr.PaymentResultCodePaymentSuccess {
+					paymentOp := envelope.Tx.Operations[ix].Body.PaymentOp
+					val1 = "Payment:\n" + toString(resultTr.PaymentResult)
+					val2 = toString(paymentOp)
+					val2 += "\nSource Account: " + AccountIdToString(envelope.Tx.SourceAccount)
+					val2 += "\nDestination Account: " + AccountIdToString(paymentOp.Destination)
+				}
+			}
+		}
+		if len(val1) == 0 {
+			return
+		}
+		fmt.Println("-----")
+		fmt.Println(val1)
+		fmt.Println("###")
+		fmt.Println(val2)
+		fmt.Println("-----")
+	}
+}
+
+func toString(value interface{}) string {
+	b, _ := json.MarshalIndent(value, "", "  ")
+	return string(b)
 }
