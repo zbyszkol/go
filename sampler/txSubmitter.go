@@ -90,12 +90,16 @@ func (submitter *txSubmitter) FetchAccount(address keypair.KP) (*core.Account, e
 	return &account, nil
 }
 
-// func waitForLedgerSequenceNumberExceed(ledgerSeqNum uint64) error {
-// 	seqNum := ledgerSeqNum
-// 	for seqNum <= ledgerSeqNum {
-
-// 	}
-// }
+func waitForTransactionResultOnce(coreQ *core.Q, txHash string) func() (*core.Transaction, error) {
+	return func() (*core.Transaction, error) {
+		var result core.Transaction
+		error := coreQ.TransactionByHash(&result, txHash)
+		if error != nil && !coreQ.NoRows(error) {
+			return nil, error
+		}
+		return &result, nil
+	}
+}
 
 func waitForTransactionResult(coreQ *core.Q, txHash string) func() (*core.Transaction, error) {
 	return func() (*core.Transaction, error) {
@@ -111,6 +115,24 @@ func waitForTransactionResult(coreQ *core.Q, txHash string) func() (*core.Transa
 			}
 		}
 		return &result, nil
+	}
+}
+
+func waitForNewSequenceNumberOnce(sequenceProvider SequenceNumberFetcher, account *AccountEntry) func() (*build.Sequence, error) {
+	accountSeqNum := account.SeqNum
+	return func() (*build.Sequence, error) {
+		sequenceNumValue, fetchError := sequenceProvider.FetchSequenceNumber(account.Keypair.GetSeed())
+		if fetchError != nil {
+			return nil, errors.New("error while fetching a sequence number")
+		}
+		sequence := xdr.SequenceNumber(sequenceNumValue.Sequence)
+		if sequence < accountSeqNum {
+			return nil, errors.New("acount's sequence number is in the future")
+		}
+		if sequence != accountSeqNum {
+			return &build.Sequence{uint64(sequence)}, nil
+		}
+		return nil, nil
 	}
 }
 

@@ -1,12 +1,12 @@
 package main
 
 import (
-	"errors"
+	// "errors"
 	"flag"
 	"fmt"
+	"github.com/stellar/go/build"
 	. "github.com/stellar/go/sampler"
 	. "github.com/stellar/go/sampler/failureDetector"
-	"github.com/stellar/go/xdr"
 	"github.com/stellar/horizon/db2/core"
 	"math/rand"
 	"net/http"
@@ -35,6 +35,8 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 
 	var database Database = NewInMemoryDatabase(sequenceFetcher)
 
+	localSampler := newCommitHelper(database)
+
 	database, rootError := AddRootAccount(database, accountFetcher, sequenceFetcher)
 	if rootError != nil {
 		panic("Unable to add the root account.")
@@ -43,14 +45,17 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 	ticker := time.NewTicker(time.Second)
 	var operationsCounter uint = 0
 	for operationsCounter < numberOfOperations {
+		localSampler.processCommitQueue()
 		for it := uint(0); it < txRate; it++ {
-			operationsCount, txError := singleTransaction(database, submitter, sampler)
+			operationsCount, txError := localSampler.singleTransaction(submitter, sampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
+				panic("error while committing a transaction")
 			} else {
 				operationsCounter += operationsCount
 			}
 		}
+		Logger.Print("transactions generated with the specified txRate")
 		select {
 		case <-cancellation:
 			return
@@ -59,17 +64,35 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 	}
 }
 
-func singleTransaction(database Database, submitter TxSubmitter, sampler TransactionGenerator) (uint, error) {
+type txPair struct {
+	confirm func() (*build.Sequence, error)
+	commit  func(Database) Database
+}
+
+func newCommitHelper(database Database) commitHelper {
+	return commitHelper{counter: 0, commitQueue: make(map[uint64]txPair), database: database}
+}
+
+type commitHelper struct {
+	counter     uint64
+	commitQueue map[uint64]txPair
+	database    Database
+}
+
+func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler TransactionGenerator) (uint, error) {
+	database := this.database
 	var operationsCount uint = 0
 	database.BeginTransaction()
 	defer database.EndTransaction()
 
 	Logger.Printf("sampling data")
-	data, sourceAccount := sampler(1, database)
+
+	data, sourceAccount, commitTransaction := sampler(1, database)
+
 	Logger.Printf("data sampled %+v", &data)
 	if data == nil || sourceAccount == nil {
 		Logger.Printf("unable to generate correct transaction, continuing...")
-		return operationsCount, errors.New("unable to generate correct transaction")
+		return 0, nil // errors.New("unable to generate correct transaction")
 	}
 	operationsCount = uint(len(data.TX.Operations))
 	Logger.Print("submitting tx")
@@ -78,33 +101,58 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 		Logger.Printf("tx submit rejected: %s", submitResult.Err)
 		database = handleTransactionError(database, transactionResult)
 
-		return operationsCount, errors.New("tx submit rejected")
+		return operationsCount, nil // errors.New("tx submit rejected")
 	}
 	Logger.Print("tx submitted")
+	// TODO move it somewhere else. Commit after you're sure that tx was externalized.
+	// database = commitTransaction(database)
+
+	// return operationsCount, nil
+	this.addToCommitQueue(sequenceUpdate, commitTransaction)
+
+	// Logger.Print("waiting for tx to externalize (seqnum increase)")
+	// newSequenceNum, seqError := sequenceUpdate()
+	// if seqError != nil {
+	// 	Logger.Print("error while checking if tx was externalized; downloading tx result")
+	// 	database = handleTransactionError(database, transactionResult)
+
+	// 	return operationsCount, errors.New("error while checking if tx was externalized")
+	// }
+	// sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
+
+	// if Debug {
+	// 	// txResult, txError := transactionResult()
+	// 	// if txError != nil {
+	// 	// 	Logger.Printf("error while downloading tx result: %+v", txError)
+	// 	// } else {
+	// 	// 	Logger.Printf("tx result: %+v", txResult)
+	// 	// }
+	// 	database = handleTransactionError(database, transactionResult)
+	// }
+
 	return operationsCount, nil
+}
 
-	Logger.Print("waiting for tx to externalize (seqnum increase)")
-	newSequenceNum, seqError := sequenceUpdate()
-	if seqError != nil {
-		Logger.Print("error while checking if tx was externalized; downloading tx result")
-		database = handleTransactionError(database, transactionResult)
+func (sampler *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit func(Database) Database) {
+	sampler.counter++
+	sampler.commitQueue[sampler.counter] = txPair{confirm, commit}
+}
 
-		return operationsCount, errors.New("error while checking if tx was externalized")
+func (sampler *commitHelper) processCommitQueue() {
+	Logger.Print("processing the commit queue")
+	for key, value := range sampler.commitQueue {
+		newSequence, seqError := value.confirm()
+		if seqError != nil {
+			Logger.Print("error while checking if tx was externalized; downloading tx result")
+			panic("error while checking if tx was externalized")
+		}
+		if newSequence == nil {
+			continue
+		}
+		sampler.database = value.commit(sampler.database)
+		Logger.Print("tx externalized, finishing")
+		delete(sampler.commitQueue, key)
 	}
-	sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
-
-	if Debug {
-		// txResult, txError := transactionResult()
-		// if txError != nil {
-		// 	Logger.Printf("error while downloading tx result: %+v", txError)
-		// } else {
-		// 	Logger.Printf("tx result: %+v", txResult)
-		// }
-		database = handleTransactionError(database, transactionResult)
-	}
-
-	Logger.Print("tx externalized, finishing")
-	return operationsCount, nil
 }
 
 func handleTransactionError(database Database, transactionResult func() (*core.Transaction, error)) Database {
@@ -180,8 +228,8 @@ func main() {
 	stellarCoreURL := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
 	flag.Parse()
 
-	failureDetector(*postgresConnectionString)
-	return
+	// failureDetector(*postgresConnectionString)
+	// return
 
 	var cancellation chan struct{} = make(chan struct{}, 2)
 	defer func() {
@@ -191,7 +239,7 @@ func main() {
 
 	setupSignalHandler(cancellation)
 
-	const txRate, numberOfOperations, expectedNumberOfAccounts uint = 10, 1000000, 10000
+	const txRate, numberOfOperations, expectedNumberOfAccounts uint = 100, 1000000, 10000
 
 	samplerLoop(*postgresConnectionString, *stellarCoreURL, cancellation, txRate, numberOfOperations, expectedNumberOfAccounts)
 }
