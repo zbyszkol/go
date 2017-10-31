@@ -211,13 +211,13 @@ func (data *InMemoryDatabase) GetAccountByAddress(address string) *AccountEntry 
 	return data.mappedData[address]
 }
 
-type CommitTransaction func(Database) Database
+type CommitResult func(Database) Database
 
-type TransactionGenerator func(uint64, Database) (*build.TransactionBuilder, *AccountEntry, CommitTransaction)
+type RejectResult func(Database) Database
 
-type CommitOperation func(Database) Database
+type TransactionGenerator func(uint64, Database) (*build.TransactionBuilder, *AccountEntry, CommitResult, RejectResult)
 
-type MutatorGenerator func(uint64, Database) (build.TransactionMutator, CommitOperation)
+type MutatorGenerator func(uint64, Database) (build.TransactionMutator, CommitResult, RejectResult)
 
 type GeneratorsListEntry struct {
 	Generator func(*AccountEntry) MutatorGenerator
@@ -232,7 +232,7 @@ type TransactionsSampler struct {
 
 func NewTransactionGenerator(generators ...GeneratorsListEntry) TransactionGenerator {
 	sampler := &TransactionsSampler{generators: getRandomGeneratorWrapper(generators)}
-	return func(size uint64, database Database) (*build.TransactionBuilder, *AccountEntry, CommitTransaction) {
+	return func(size uint64, database Database) (*build.TransactionBuilder, *AccountEntry, CommitResult, RejectResult) {
 		return sampler.Generate(size, database)
 	}
 }
@@ -269,10 +269,11 @@ const (
 var txRand = rand.New(rand.NewSource(0))
 var opRand = rand.New(rand.NewSource(0))
 
-func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*build.TransactionBuilder, *AccountEntry, CommitTransaction) {
+func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*build.TransactionBuilder, *AccountEntry, CommitResult, RejectResult) {
 	var transaction *build.TransactionBuilder
 	var sourceAccount *AccountEntry
-	var commitOperations []CommitOperation
+	var commitOperations []CommitResult
+	var rejectOperations []RejectResult
 	sourceAccount = getRandomAccountWithNonZeroSequence(database)
 	// TODO get an account with different than 0 sequence number
 	Logger.Printf("using following source account: %s", sourceAccount.Keypair.GetSeed())
@@ -281,12 +282,12 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	if availableAmount <= 0 {
 		Logger.Print("account's balance lower than minimal balance")
 		// continue
-		return nil, sourceAccount, func(d Database) Database { return d }
+		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
 	if availableAmount <= minimalOperation {
 		Logger.Printf("account's balance is too small: %d (expected %d)", availableAmount, minimalOperation)
 		// continue
-		return nil, sourceAccount, func(d Database) Database { return d }
+		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
 	availableAmount = txRand.Int63n(availableAmount-minimalOperation) + minimalOperation
 	Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
@@ -301,25 +302,29 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	if seqError != nil {
 		Logger.Print("error while getting account's sequence number")
 		// continue
-		return nil, sourceAccount, func(d Database) Database { return d }
+		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
+
 	seq.Sequence++
 	sourceAccount.SetSequence(seq)
+
 	operations := []build.TransactionMutator{
 		build.SourceAccount{sourceAccount.Keypair.GetSeed().Address()},
 		seq,
 		build.TestNetwork,
 	}
-	commitOperations = []CommitOperation{}
+	commitOperations = []CommitResult{}
+	rejectOperations = []RejectResult{}
 	for _, value := range balancePartition {
 		generator := sampler.generators(sourceAccount)
-		mutator, commitOperation := generator(uint64(value+minimalBalance), database)
+		mutator, commitOperation, rejectOperation := generator(uint64(value+minimalBalance), database)
 		if mutator == nil {
 			Logger.Printf("sampled a nil transaction mutator")
 			continue
 		}
 		operations = append(operations, mutator)
 		commitOperations = append(commitOperations, commitOperation)
+		rejectOperations = append(rejectOperations, rejectOperation)
 		sourceAccount.Balance -= xdr.Int64(baseFee)
 	}
 
@@ -328,11 +333,20 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	)
 
 	return transaction, sourceAccount, func(database Database) Database {
-		for _, operation := range commitOperations {
-			database = operation(database)
+			for _, operation := range commitOperations {
+				database = operation(database)
+			}
+			return database
+		},
+		func(database Database) Database {
+			seq.Sequence++
+			sourceAccount.SetSequence(seq)
+
+			for range commitOperations {
+				sourceAccount.Balance += xdr.Int64(baseFee)
+			}
+			return database
 		}
-		return database
-	}
 }
 
 func ApplyChanges(changes *xdr.TransactionMeta, database Database) Database {
@@ -407,7 +421,7 @@ func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) 
 }
 
 func GetValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
-	return func(startingBalance uint64, database Database) (build.TransactionMutator, CommitOperation) {
+	return func(startingBalance uint64, database Database) (build.TransactionMutator, CommitResult, RejectResult) {
 		destinationKeypair := getNextKeypair() // generateRandomKeypair()
 		Logger.Printf("generated account for CreateAccount operation: seed - %s, public - %s", destinationKeypair.GetSeed(), destinationKeypair.GetSeed().Address())
 		// TODO set seqnum to ledgernum << 32
@@ -421,12 +435,15 @@ func GetValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator 
 		Logger.Printf("created account's balance is %d", amount)
 
 		return &result, func(database Database) Database {
-			newAccount := &AccountEntry{Keypair: destinationKeypair}
-			newAccount.Balance = xdr.Int64(startingBalance)
-			database.AddAccount(newAccount)
-
-			return database
-		}
+				newAccount := &AccountEntry{Keypair: destinationKeypair}
+				newAccount.Balance = xdr.Int64(startingBalance)
+				database.AddAccount(newAccount)
+				return database
+			},
+			func(database Database) Database {
+				sourceAccount.Balance += xdr.Int64(int64(startingBalance))
+				return database
+			}
 	}
 }
 
@@ -455,7 +472,7 @@ func bytesToString(data []byte) string {
 }
 
 func GetValidPaymentMutatorNative(sourceAccount *AccountEntry) MutatorGenerator {
-	return func(payment uint64, database Database) (build.TransactionMutator, CommitOperation) {
+	return func(payment uint64, database Database) (build.TransactionMutator, CommitResult, RejectResult) {
 		Logger.Printf("sampling a valid payment")
 		destinationAccount := getRandomAccountWithNonZeroSequence(database)
 		// destinationAccount := getRandomAccount(database)
@@ -467,14 +484,18 @@ func GetValidPaymentMutatorNative(sourceAccount *AccountEntry) MutatorGenerator 
 		Logger.Printf("created Payment tx: %+v", result)
 		Logger.Printf("%s created payment for account %s", sourceAccount.Keypair.GetSeed().Address(), destinationAccount.Keypair.GetSeed().Address())
 		return result, func(database Database) Database {
-			destinationAccount.Balance += xdr.Int64(payment)
-			return database
-		}
+				destinationAccount.Balance += xdr.Int64(payment)
+				return database
+			},
+			func(database Database) Database {
+				sourceAccount.Balance += xdr.Int64(payment)
+				return database
+			}
 	}
 }
 
 func getValidPaymentMutatorFromTrustline(sourceAccount *AccountEntry) MutatorGenerator {
-	return func(payment uint64, database Database) (build.TransactionMutator, CommitOperation) {
+	return func(payment uint64, database Database) (build.TransactionMutator, CommitResult, RejectResult) {
 		Logger.Printf("sampling a valid payment")
 		destinationAccount := getRandomAccount(database)
 		trustLine, destTrustLine := getRandomTrustLine(sourceAccount, destinationAccount, database)
@@ -505,7 +526,7 @@ func getValidPaymentMutatorFromTrustline(sourceAccount *AccountEntry) MutatorGen
 		result := build.Payment(build.Destination{destinationAccount.Keypair.GetSeed().Address()}, paymentMut)
 		Logger.Printf("created Payment tx: %+v", result)
 		// TODO fix this
-		return result, nil
+		return result, nil, nil
 	}
 }
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	// "errors"
 	"flag"
 	"fmt"
 	"github.com/stellar/go/build"
@@ -25,7 +24,6 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 	var accountFetcher AccountFetcher
 	var sequenceFetcher SequenceNumberFetcher
 	submitter, accountFetcher, sequenceFetcher = NewTxSubmitter(httpClient, stellarCoreUrl, postgresqlConnection)
-	// var sampler TransactionGenerator = DefaultTransactionGenerator()
 
 	var accountProbability = uint((float64(expectedNumberOfAccounts) / float64(numberOfOperations)) * 100)
 	Logger.Printf("account's probability: %d", accountProbability)
@@ -43,16 +41,14 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 	}
 
 	ticker := time.NewTicker(time.Second)
-	var operationsCounter uint = 0
-	for operationsCounter < numberOfOperations {
+	for operationsCounter, operationsCount := uint(0), uint(0); operationsCounter < numberOfOperations; operationsCounter += operationsCount {
 		localSampler.processCommitQueue()
 		for it := uint(0); it < txRate; it++ {
-			operationsCount, txError := localSampler.singleTransaction(submitter, sampler)
+			var txError error = nil
+			operationsCount, txError = localSampler.singleTransaction(submitter, sampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
 				panic("error while committing a transaction")
-			} else {
-				operationsCounter += operationsCount
 			}
 		}
 		Logger.Print("transactions generated with the specified txRate")
@@ -87,54 +83,35 @@ func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler Trans
 
 	Logger.Printf("sampling data")
 
-	data, sourceAccount, commitTransaction := sampler(1, database)
+	data, sourceAccount, commitTransaction, rejectTransaction := sampler(1, database)
 
 	Logger.Printf("data sampled %+v", &data)
 	if data == nil || sourceAccount == nil {
-		Logger.Printf("unable to generate correct transaction, continuing...")
+		Logger.Printf("unable to generate a correct transaction, continuing...")
 		return 0, nil // errors.New("unable to generate correct transaction")
 	}
-	operationsCount = uint(len(data.TX.Operations))
 	Logger.Print("submitting tx")
-	submitResult, sequenceUpdate, transactionResult := submitter.Submit(sourceAccount, data)
+	submitResult, sequenceUpdate, _ := submitter.Submit(sourceAccount, data)
 	if submitResult.Err != nil {
 		Logger.Printf("tx submit rejected: %s", submitResult.Err)
-		database = handleTransactionError(database, transactionResult)
+		database = rejectTransaction(database)
 
-		return operationsCount, nil // errors.New("tx submit rejected")
+		return 0, nil // errors.New("tx submit rejected")
 	}
 	Logger.Print("tx submitted")
-	// TODO move it somewhere else. Commit after you're sure that tx was externalized.
-	// database = commitTransaction(database)
 
-	// return operationsCount, nil
 	this.addToCommitQueue(sequenceUpdate, commitTransaction)
 
-	// Logger.Print("waiting for tx to externalize (seqnum increase)")
-	// newSequenceNum, seqError := sequenceUpdate()
-	// if seqError != nil {
-	// 	Logger.Print("error while checking if tx was externalized; downloading tx result")
-	// 	database = handleTransactionError(database, transactionResult)
-
-	// 	return operationsCount, errors.New("error while checking if tx was externalized")
-	// }
-	// sourceAccount.SeqNum = xdr.SequenceNumber(newSequenceNum.Sequence)
-
-	// if Debug {
-	// 	// txResult, txError := transactionResult()
-	// 	// if txError != nil {
-	// 	// 	Logger.Printf("error while downloading tx result: %+v", txError)
-	// 	// } else {
-	// 	// 	Logger.Printf("tx result: %+v", txResult)
-	// 	// }
-	// 	database = handleTransactionError(database, transactionResult)
-	// }
-
+	operationsCount = uint(len(data.TX.Operations))
 	return operationsCount, nil
 }
 
 func (sampler *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit func(Database) Database) {
 	sampler.counter++
+	// TODO change me!
+	confirm = func() (*build.Sequence, error) {
+		return &build.Sequence{}, nil
+	}
 	sampler.commitQueue[sampler.counter] = txPair{confirm, commit}
 }
 
