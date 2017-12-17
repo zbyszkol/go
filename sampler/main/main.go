@@ -9,15 +9,14 @@ import (
 	"github.com/stellar/horizon/db2/core"
 	"math/rand"
 	"net/http"
-	"os"
-	"os/signal"
 	"sort"
 	"time"
 )
 
 const Debug bool = true
 
-func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-chan struct{}, txRate, numberOfOperations, expectedNumberOfAccounts uint) {
+// TODO modify this so one can use it in a benchmark
+func samplerLoop(postgresqlConnection, stellarCoreUrl string, txRate, numberOfOperations, expectedNumberOfAccounts uint) {
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(10 * time.Second)
 	var submitter TxSubmitter
@@ -52,11 +51,7 @@ func samplerLoop(postgresqlConnection, stellarCoreUrl string, cancellation <-cha
 			}
 		}
 		Logger.Print("transactions generated with the specified txRate")
-		select {
-		case <-cancellation:
-			return
-		case <-ticker.C:
-		}
+		<-ticker.C
 	}
 }
 
@@ -95,6 +90,7 @@ func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler Trans
 	if submitResult.Err != nil {
 		Logger.Printf("tx submit rejected: %s", submitResult.Err)
 		database = rejectTransaction(database)
+		// panic("tx submit rejected")
 
 		return 0, nil // errors.New("tx submit rejected")
 	}
@@ -109,9 +105,9 @@ func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler Trans
 func (sampler *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit func(Database) Database) {
 	sampler.counter++
 	// TODO change me!
-	confirm = func() (*build.Sequence, error) {
-		return &build.Sequence{}, nil
-	}
+	// confirm = func() (*build.Sequence, error) {
+	// 	return &build.Sequence{}, nil
+	// }
 	sampler.commitQueue[sampler.counter] = txPair{confirm, commit}
 }
 
@@ -153,17 +149,6 @@ func handleTransactionError(database Database, transactionResult func() (*core.T
 	return database
 }
 
-func setupSignalHandler(cancellationChannel chan struct{}) {
-	return
-	osSignal := make(chan os.Signal, 1)
-	signal.Notify(osSignal, os.Interrupt, os.Kill)
-	go func() {
-		for range osSignal {
-			cancellationChannel <- struct{}{}
-		}
-	}()
-}
-
 func test() {
 	value := rand.Intn(100) + 1
 	size := rand.Intn(value) + 1
@@ -197,6 +182,58 @@ func failureDetector(postgresConnectionString string) {
 	}
 }
 
+func benchmarkScenario(
+	httpClient *http.Client,
+	submitter TxSubmitter,
+	accountFetcher AccountFetcher,
+	sequenceFetcher SequenceNumberFetcher,
+	txRate,
+	numberOfOperations,
+	expectedNumberOfAccounts uint) {
+
+	accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: 100}
+	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100 - accountGenerator.Bias}
+	var accountSampler TransactionGenerator = NewTransactionGenerator(accountGenerator)
+
+	var database Database = NewInMemoryDatabase(sequenceFetcher)
+	localSampler := newCommitHelper(database)
+
+	database, rootError := AddRootAccount(database, accountFetcher, sequenceFetcher)
+	if rootError != nil {
+		panic("Unable to add the root account.")
+	}
+
+	// create some amount of accounts
+	for operationsCounter, operationsCount := uint(0), uint(0); operationsCounter < expectedNumberOfAccounts; operationsCounter += operationsCount {
+		localSampler.processCommitQueue()
+		var txError error = nil
+		operationsCount, txError = localSampler.singleTransaction(submitter, accountSampler)
+		if txError != nil {
+			Logger.Printf("error while committing a transaction: %s", txError)
+			panic("error while committing a transaction")
+		}
+	}
+	Logger.Println("Accounts creation procedure finished")
+
+	paymentGenerator.Bias = 100
+	sampler := NewTransactionGenerator(paymentGenerator)
+
+	ticker := time.NewTicker(time.Second)
+	for operationsCounter, operationsCount := uint(0), uint(0); operationsCounter < numberOfOperations; operationsCounter += operationsCount {
+		localSampler.processCommitQueue()
+		for it := uint(0); it < txRate; it++ {
+			var txError error = nil
+			operationsCount, txError = localSampler.singleTransaction(submitter, sampler)
+			if txError != nil {
+				Logger.Printf("error while committing a transaction: %s", txError)
+				panic("error while committing a transaction")
+			}
+		}
+		Logger.Print("transactions generated with the specified txRate")
+		<-ticker.C
+	}
+}
+
 func main() {
 	// test()
 	// return
@@ -208,15 +245,20 @@ func main() {
 	// failureDetector(*postgresConnectionString)
 	// return
 
-	var cancellation chan struct{} = make(chan struct{}, 2)
-	defer func() {
-		cancellation <- struct{}{}
-		close(cancellation)
-	}()
+	const txRate, numberOfOperations, expectedNumberOfAccounts uint = 1000, 10000000, 1000000
 
-	setupSignalHandler(cancellation)
+	httpClient := http.DefaultClient
+	httpClient.Timeout = time.Duration(10 * time.Second)
+	var submitter TxSubmitter
+	var accountFetcher AccountFetcher
+	var sequenceFetcher SequenceNumberFetcher
+	submitter, accountFetcher, sequenceFetcher = NewTxSubmitter(httpClient, *stellarCoreURL, *postgresConnectionString)
+	benchmarkScenario(httpClient, submitter, accountFetcher, sequenceFetcher, txRate, numberOfOperations, expectedNumberOfAccounts)
 
-	const txRate, numberOfOperations, expectedNumberOfAccounts uint = 100, 1000000, 10000
-
-	samplerLoop(*postgresConnectionString, *stellarCoreURL, cancellation, txRate, numberOfOperations, expectedNumberOfAccounts)
+	// TODO write looper which just generates transactions and write them into a file/output then play them back to stellar-core
 }
+
+// TODO new version of the sampler:
+// 1) generate some number of accounts with same startingBalance
+// 2) pause
+// 3) use them for generating payment transactions
