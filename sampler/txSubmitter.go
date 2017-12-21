@@ -2,6 +2,7 @@ package sampler
 
 import (
 	"errors"
+	"fmt"
 	"github.com/stellar/go/build"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/support/db"
@@ -63,8 +64,9 @@ func (submitter *txSubmitter) Submit(sourceAccount *AccountEntry, txBuilder *bui
 	if baseErr != nil {
 		Logger.Printf("error while serializing an envelope: %s", baseErr)
 	}
-	Logger.Printf("submitting tx: %s", envelopeString)
-	result := submitter.submitter.Submit(submitter.context, envelopeString)
+	Logger.Printf("submitting TX: %s", envelopeString)
+	fmt.Println(envelopeString)
+	result := submitter.SubmitEnvelope(envelopeString)
 	var sequenceFetcher func() (*build.Sequence, error)
 	var resultFetcher func() (*core.Transaction, error)
 	if result.Err != nil {
@@ -79,6 +81,10 @@ func (submitter *txSubmitter) Submit(sourceAccount *AccountEntry, txBuilder *bui
 		resultFetcher = waitForTransactionResult(submitter.core, txHash)
 	}
 	return result, sequenceFetcher, resultFetcher
+}
+
+func (submitter *txSubmitter) SubmitEnvelope(envelope string) txsub.SubmissionResult {
+	return submitter.submitter.Submit(submitter.context, envelope)
 }
 
 func (submitter *txSubmitter) FetchAccount(address keypair.KP) (*core.Account, error) {
@@ -173,75 +179,3 @@ func NewDbSession(psqlConnectionString string) *core.Q {
 	session.DB.SetMaxOpenConns(12)
 	return &core.Q{session}
 }
-
-// func (conf *txConfirmation) ResultByHash(ctx context.Context, hash string) txsub.Result {
-// 	return conf.core.ResultByHash(ctx, hash)
-// }
-
-// func GetChangesSinceLedgerSeq(seqNumber xdr.SequenceNumber) ([][]xdr.OperationMeta, xdr.SequenceNumber, error) {
-// }
-
-// type Errors []error
-
-// func (e Errors) Error() string {
-// 	if len(e) == 1 {
-// 		return e[0].Error()
-// 	}
-// 	msg := "multiple errors:"
-// 	for _, err := range e {
-// 		msg += "\n" + err.Error()
-// 	}
-// 	return msg
-// }
-
-// type TxConfirmation struct {
-// 	stmt        sql.Stmt
-// 	db          sql.DB
-// 	queryString string
-// }
-
-// func (conf *TxConfirmation) Initialize() {
-// 	dbinfo := ""
-// 	conf.db, openError = sql.Open("postgres", dbinfo)
-// 	if openError != nil {
-// 		return openError
-// 	}
-// 	queryString := "SELECT txmeta FROM txhistory WHERE txid=$1 LIMIT 1"
-// 	conf.stmt, stmtError = db.Prepare(queryString)
-// 	if stmtError != nil {
-// 		return stmtError
-// 	}
-// }
-
-// func (conf *TxConfirmation) Dispose() error {
-// 	stmtError := conf.stmt.Close()
-// 	dbError := conf.db.Close()
-// 	var errors Errors
-// 	if stmtError != nil {
-// 		errors = append(errors, stmtError)
-// 	}
-// 	if dbError != nil {
-// 		errors = append(errors, dbError)
-// 	}
-// 	return errors
-// }
-
-// func GetTransactionResult(transactionHash string) ([]xdr.OperationMeta, error) {
-// 	row := stmt.QueryRow(transactionHash)
-// 	var txMetaBase64 string
-// 	selectError := row.Scan(&txmeta)
-// 	if selectError != nil {
-// 		return nil, nil, selectError
-// 	}
-// 	txMeta := unmarshalTxMeta(txMetaBase64)
-// 	return txMeta.Operations
-// }
-
-// // NOTE: this data type is stored inside of a txmeta structure
-// // type LedgerEntryData struct {
-// // 	Type      LedgerEntryType
-// // 	Account   *AccountEntry
-// // 	TrustLine *TrustLineEntry
-// // 	Offer     *OfferEntry
-// // 	Data      *DataEntry
-// // }
