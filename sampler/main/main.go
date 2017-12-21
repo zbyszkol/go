@@ -9,27 +9,20 @@ import (
 	. "github.com/stellar/go/sampler/failureDetector"
 	"github.com/stellar/horizon/db2/core"
 	"math"
-	"math/rand"
 	"net/http"
-	"sort"
 	"time"
 )
 
 const Debug bool = true
 
-type txPair struct {
-	confirm func() (*build.Sequence, error)
-	commit  CommitResult
-}
-
 func newCommitHelper(database Database) commitHelper {
-	return commitHelper{counter: 0, commitQueue: make(map[uint64]txPair), database: database}
+	return commitHelper{waitCommitQueue: []CommitResult{}, commitQueue: []CommitResult{}, database: database}
 }
 
 type commitHelper struct {
-	counter     uint64
-	commitQueue map[uint64]txPair
-	database    Database
+	waitCommitQueue []CommitResult
+	commitQueue     []CommitResult
+	database        Database
 }
 
 func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler TransactionGenerator) (uint, func() (*build.Sequence, error), CommitResult, error) {
@@ -62,30 +55,21 @@ func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler Trans
 	return operationsCount, sequenceUpdate, commitTransaction, nil
 }
 
-func (sampler *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit CommitResult) {
-	sampler.counter++
-	// TODO change me!
-	// confirm = func() (*build.Sequence, error) {
-	// 	return &build.Sequence{}, nil
-	// }
-	sampler.commitQueue[sampler.counter] = txPair{confirm, commit}
+func (helper *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit CommitResult) {
+	helper.waitCommitQueue = append(helper.waitCommitQueue, commit)
 }
 
-func (sampler *commitHelper) processCommitQueue() {
+func (helper *commitHelper) processCommitQueue() {
 	Logger.Print("processing the commit queue")
-	for key, value := range sampler.commitQueue {
-		newSequence, seqError := value.confirm()
-		if seqError != nil {
-			Logger.Print("error while checking if tx was externalized; downloading tx result")
-			panic("error while checking if tx was externalized")
-		}
-		if newSequence == nil {
-			continue
-		}
-		sampler.database = value.commit(sampler.database)
-		Logger.Print("tx externalized, finishing")
-		delete(sampler.commitQueue, key)
+
+	for _, commit := range helper.commitQueue {
+		helper.database = commit(helper.database)
 	}
+	tmp := helper.commitQueue
+	helper.commitQueue = helper.waitCommitQueue
+	helper.waitCommitQueue = tmp[0:0]
+
+	Logger.Println("commit queue processed")
 }
 
 func handleTransactionError(database Database, transactionResult func() (*core.Transaction, error)) Database {
@@ -109,22 +93,10 @@ func handleTransactionError(database Database, transactionResult func() (*core.T
 	return database
 }
 
-func test() {
-	value := rand.Intn(100) + 1
-	size := rand.Intn(value) + 1
-	partition := GetRandomPartitionWithZeros(int64(value), size)
-	fmt.Println(partition)
-
-	testData := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-	testData = GetUniformMofNFromSlice(testData, 4)
-	sort.Ints(testData)
-	fmt.Println(testData)
-}
-
-func failureDetector(postgresConnectionString string) {
+func failureDetector(postgresConnectionString string, ledgerNumber uint32) {
 	coreDb := NewDbSession(postgresConnectionString)
 	// TODO move this magic number as a parameter
-	iterator := FindFailedTransactions(coreDb, 700)
+	iterator := FindFailedTransactions(coreDb, ledgerNumber)
 	noError := true
 	for hasNext, error := iterator.Next(); hasNext; hasNext, error = iterator.Next() {
 		noError = false
@@ -148,11 +120,9 @@ func benchmarkScenario(
 	accountFetcher AccountFetcher,
 	sequenceFetcher SequenceNumberFetcher,
 	txRate,
-	numberOfOperations,
-	expectedNumberOfAccounts int) {
+	expectedNumberOfAccounts uint) {
 
 	accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: 100}
-	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100 - accountGenerator.Bias}
 	var accountSampler TransactionGenerator = NewTransactionGenerator(accountGenerator)
 
 	var database Database = NewInMemoryDatabase(sequenceFetcher)
@@ -164,50 +134,48 @@ func benchmarkScenario(
 	}
 
 	// create some amount of accounts
-	txQueue := []CommitResult{}
-	txToCommit := []CommitResult{}
-	ticker := time.NewTicker(5 * time.Second)
-	createAccountsTxRate := 1000
-	for accountsCount, createdAccounts := 0, 0; accountsCount < expectedNumberOfAccounts; accountsCount += createdAccounts {
-		// localSampler.processCommitQueue()
-		for _, commit := range txToCommit {
-			database = commit(database)
-		}
-		tmp := txToCommit
-		txToCommit = txQueue
-		txQueue = tmp[0:0]
+	for accountsCount, createdAccounts := uint(0), uint(0); accountsCount < expectedNumberOfAccounts; accountsCount += createdAccounts {
 
-		for it := 0; it < createAccountsTxRate && it < int(math.Sqrt(float64(database.GetAccountsCount()))); it++ {
-			newAccounts, _, commitTx, txError := localSampler.singleTransaction(submitter, accountSampler)
-			createdAccounts = int(newAccounts)
+		localSampler.processCommitQueue()
+
+		createdAccounts = 0
+		collisionLimit := uint(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
+		for it := uint(0); it < txRate && it < collisionLimit; it++ {
+			accountsNumber, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, accountSampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
-				// panic("error while committing a transaction")
 				continue
 			}
-			// localSampler.addToCommitQueue(sequenceUpdate, commitTx)
-			txQueue = append(txQueue, commitTx)
-		}
+			createdAccounts += accountsNumber
 
-		<-ticker.C
+			localSampler.addToCommitQueue(sequenceUpdate, commitTx)
+		}
+		Logger.Printf("Collision limit was %d", collisionLimit)
+		Logger.Printf("Created %d new accounts", createdAccounts)
+
+		<-time.NewTicker(5 * time.Second).C
 	}
 	Logger.Println("Accounts creation procedure finished")
 
-	paymentGenerator.Bias = 100
-	sampler := NewTransactionGenerator(paymentGenerator)
+	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100}
+	paymentSampler := NewTransactionGenerator(paymentGenerator)
 
-	// ticker = time.NewTicker(5 * time.Second)
-	for operationsCounter, operationsCount := 0, 0; operationsCounter < numberOfOperations; operationsCounter += operationsCount {
-		// localSampler.processCommitQueue()
+	ticker := time.NewTicker(5 * time.Second)
 
-		for it := 0; it < txRate && it < int(math.Sqrt(float64(database.GetAccountsCount()))); it++ {
-			nOperations, _, _, txError := localSampler.singleTransaction(submitter, sampler)
-			operationsCount = int(nOperations)
+	for {
+
+		localSampler.processCommitQueue()
+
+		collisionLimit := uint(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
+		Logger.Printf("Collision limit is %d", collisionLimit)
+		for it := uint(0); it < txRate && it < collisionLimit; it++ {
+			_, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, paymentSampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
 				panic("error while committing a transaction")
 			}
-			// localSampler.addToCommitQueue(sequenceUpdate, commitTx)
+
+			localSampler.addToCommitQueue(sequenceUpdate, commitTx)
 		}
 		Logger.Print("transactions generated with the specified txRate")
 		<-ticker.C
@@ -225,10 +193,10 @@ func main() {
 	stellarCoreURL := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
 	flag.Parse()
 
-	// failureDetector(*postgresConnectionString)
+	// failureDetector(*postgresConnectionString, 1000)
 	// return
 
-	const txRate, numberOfOperations, expectedNumberOfAccounts int = 1000, 10000000, 1000000
+	const txRate, expectedNumberOfAccounts uint = 1000, 1000000
 
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(10 * time.Second)
@@ -236,7 +204,7 @@ func main() {
 	var accountFetcher AccountFetcher
 	var sequenceFetcher SequenceNumberFetcher
 	submitter, accountFetcher, sequenceFetcher = NewTxSubmitter(httpClient, *stellarCoreURL, *postgresConnectionString)
-	benchmarkScenario(httpClient, submitter, accountFetcher, sequenceFetcher, txRate, numberOfOperations, expectedNumberOfAccounts)
+	benchmarkScenario(httpClient, submitter, accountFetcher, sequenceFetcher, txRate, expectedNumberOfAccounts)
 
 	// TODO write looper which just generates transactions and write them into a file/output then play them back to stellar-core
 }
