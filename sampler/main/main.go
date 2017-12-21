@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/stellar/go/build"
 	. "github.com/stellar/go/sampler"
 	. "github.com/stellar/go/sampler/failureDetector"
 	"github.com/stellar/horizon/db2/core"
+	"math"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -15,49 +17,9 @@ import (
 
 const Debug bool = true
 
-// TODO modify this so one can use it in a benchmark
-func samplerLoop(postgresqlConnection, stellarCoreUrl string, txRate, numberOfOperations, expectedNumberOfAccounts uint) {
-	httpClient := http.DefaultClient
-	httpClient.Timeout = time.Duration(10 * time.Second)
-	var submitter TxSubmitter
-	var accountFetcher AccountFetcher
-	var sequenceFetcher SequenceNumberFetcher
-	submitter, accountFetcher, sequenceFetcher = NewTxSubmitter(httpClient, stellarCoreUrl, postgresqlConnection)
-
-	var accountProbability = uint((float64(expectedNumberOfAccounts) / float64(numberOfOperations)) * 100)
-	Logger.Printf("account's probability: %d", accountProbability)
-	accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: accountProbability}
-	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100 - accountProbability}
-	var sampler TransactionGenerator = NewTransactionGenerator(accountGenerator, paymentGenerator)
-
-	var database Database = NewInMemoryDatabase(sequenceFetcher)
-
-	localSampler := newCommitHelper(database)
-
-	database, rootError := AddRootAccount(database, accountFetcher, sequenceFetcher)
-	if rootError != nil {
-		panic("Unable to add the root account.")
-	}
-
-	ticker := time.NewTicker(time.Second)
-	for operationsCounter, operationsCount := uint(0), uint(0); operationsCounter < numberOfOperations; operationsCounter += operationsCount {
-		localSampler.processCommitQueue()
-		for it := uint(0); it < txRate; it++ {
-			var txError error = nil
-			operationsCount, txError = localSampler.singleTransaction(submitter, sampler)
-			if txError != nil {
-				Logger.Printf("error while committing a transaction: %s", txError)
-				panic("error while committing a transaction")
-			}
-		}
-		Logger.Print("transactions generated with the specified txRate")
-		<-ticker.C
-	}
-}
-
 type txPair struct {
 	confirm func() (*build.Sequence, error)
-	commit  func(Database) Database
+	commit  CommitResult
 }
 
 func newCommitHelper(database Database) commitHelper {
@@ -70,7 +32,7 @@ type commitHelper struct {
 	database    Database
 }
 
-func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler TransactionGenerator) (uint, error) {
+func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler TransactionGenerator) (uint, func() (*build.Sequence, error), CommitResult, error) {
 	database := this.database
 	var operationsCount uint = 0
 	database.BeginTransaction()
@@ -83,7 +45,7 @@ func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler Trans
 	Logger.Printf("data sampled %+v", &data)
 	if data == nil || sourceAccount == nil {
 		Logger.Printf("unable to generate a correct transaction, continuing...")
-		return 0, nil // errors.New("unable to generate correct transaction")
+		return 0, nil, nil, errors.New("unable to generate correct transaction")
 	}
 	Logger.Print("submitting tx")
 	submitResult, sequenceUpdate, _ := submitter.Submit(sourceAccount, data)
@@ -92,17 +54,15 @@ func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler Trans
 		database = rejectTransaction(database)
 		// panic("tx submit rejected")
 
-		return 0, nil // errors.New("tx submit rejected")
+		return 0, nil, nil, errors.New("tx submit rejected")
 	}
 	Logger.Print("tx submitted")
 
-	this.addToCommitQueue(sequenceUpdate, commitTransaction)
-
 	operationsCount = uint(len(data.TX.Operations))
-	return operationsCount, nil
+	return operationsCount, sequenceUpdate, commitTransaction, nil
 }
 
-func (sampler *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit func(Database) Database) {
+func (sampler *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit CommitResult) {
 	sampler.counter++
 	// TODO change me!
 	// confirm = func() (*build.Sequence, error) {
@@ -189,7 +149,7 @@ func benchmarkScenario(
 	sequenceFetcher SequenceNumberFetcher,
 	txRate,
 	numberOfOperations,
-	expectedNumberOfAccounts uint) {
+	expectedNumberOfAccounts int) {
 
 	accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: 100}
 	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100 - accountGenerator.Bias}
@@ -204,34 +164,57 @@ func benchmarkScenario(
 	}
 
 	// create some amount of accounts
-	for operationsCounter, operationsCount := uint(0), uint(0); operationsCounter < expectedNumberOfAccounts; operationsCounter += operationsCount {
-		localSampler.processCommitQueue()
-		var txError error = nil
-		operationsCount, txError = localSampler.singleTransaction(submitter, accountSampler)
-		if txError != nil {
-			Logger.Printf("error while committing a transaction: %s", txError)
-			panic("error while committing a transaction")
+	txQueue := []CommitResult{}
+	txToCommit := []CommitResult{}
+	ticker := time.NewTicker(5 * time.Second)
+	createAccountsTxRate := 1000
+	for accountsCount, createdAccounts := 0, 0; accountsCount < expectedNumberOfAccounts; accountsCount += createdAccounts {
+		// localSampler.processCommitQueue()
+		for _, commit := range txToCommit {
+			database = commit(database)
 		}
+		tmp := txToCommit
+		txToCommit = txQueue
+		txQueue = tmp[0:0]
+
+		for it := 0; it < createAccountsTxRate && it < int(math.Sqrt(float64(database.GetAccountsCount()))); it++ {
+			newAccounts, _, commitTx, txError := localSampler.singleTransaction(submitter, accountSampler)
+			createdAccounts = int(newAccounts)
+			if txError != nil {
+				Logger.Printf("error while committing a transaction: %s", txError)
+				// panic("error while committing a transaction")
+				continue
+			}
+			// localSampler.addToCommitQueue(sequenceUpdate, commitTx)
+			txQueue = append(txQueue, commitTx)
+		}
+
+		<-ticker.C
 	}
 	Logger.Println("Accounts creation procedure finished")
 
 	paymentGenerator.Bias = 100
 	sampler := NewTransactionGenerator(paymentGenerator)
 
-	ticker := time.NewTicker(time.Second)
-	for operationsCounter, operationsCount := uint(0), uint(0); operationsCounter < numberOfOperations; operationsCounter += operationsCount {
-		localSampler.processCommitQueue()
-		for it := uint(0); it < txRate; it++ {
-			var txError error = nil
-			operationsCount, txError = localSampler.singleTransaction(submitter, sampler)
+	// ticker = time.NewTicker(5 * time.Second)
+	for operationsCounter, operationsCount := 0, 0; operationsCounter < numberOfOperations; operationsCounter += operationsCount {
+		// localSampler.processCommitQueue()
+
+		for it := 0; it < txRate && it < int(math.Sqrt(float64(database.GetAccountsCount()))); it++ {
+			nOperations, _, _, txError := localSampler.singleTransaction(submitter, sampler)
+			operationsCount = int(nOperations)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
 				panic("error while committing a transaction")
 			}
+			// localSampler.addToCommitQueue(sequenceUpdate, commitTx)
 		}
 		Logger.Print("transactions generated with the specified txRate")
 		<-ticker.C
 	}
+}
+
+func (this *commitHelper) prepareAccounts(submitter TxSubmitter, accountSampler TransactionGenerator) {
 }
 
 func main() {
@@ -245,7 +228,7 @@ func main() {
 	// failureDetector(*postgresConnectionString)
 	// return
 
-	const txRate, numberOfOperations, expectedNumberOfAccounts uint = 1000, 10000000, 1000000
+	const txRate, numberOfOperations, expectedNumberOfAccounts int = 1000, 10000000, 1000000
 
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(10 * time.Second)

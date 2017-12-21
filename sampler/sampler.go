@@ -1,4 +1,3 @@
-// TODO money transfer should be changed after a transaction is confirmed.
 package sampler
 
 import (
@@ -7,7 +6,6 @@ import (
 	"github.com/stellar/go/build"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/strkey"
-	"github.com/stellar/go/utils/circularBuffer"
 	"github.com/stellar/go/xdr"
 	"math"
 	"math/rand"
@@ -58,7 +56,7 @@ func (value *SequenceInitilizer) GetSequence() (build.Sequence, error) {
 	var error error
 	result, error = value.seqProvider.FetchSequenceNumber(value.account.Keypair.GetSeed())
 	if error != nil {
-		Logger.Printf("error while fetching a sequence number: %v", error)
+		Logger.ErrorPrintf("error while fetching a sequence number for account %s: %s", value.account.Keypair.GetSeed(), error)
 		return result, error
 	}
 	if result.Sequence != 0 {
@@ -112,7 +110,7 @@ var rootAccount AccountEntry = AccountEntry{}
 func AddRootAccount(database Database, accountFetcher AccountFetcher, sequenceProvider SequenceNumberFetcher) (Database, error) {
 	database.BeginTransaction()
 	defer database.EndTransaction()
-	rootSeed := "SDHOAMBNLGCE2MV5ZKIVZAQD3VCLGP53P3OBSBI6UN5L5XZI5TKHFQL4"
+	rootSeed := "SDHOAMBNLGCE2MV5ZKIVZAQD3VCLGP53P3OBSBI6UN5L5XZI5TKHFQL4" // "(V) (;,,;) (V)"
 	fullKP := fromRawSeed(seedStringToBytes(rootSeed))
 	coreAccount, fetchError := accountFetcher.FetchAccount(fullKP)
 	if fetchError != nil {
@@ -124,8 +122,6 @@ func AddRootAccount(database Database, accountFetcher AccountFetcher, sequencePr
 	seqManager := Uint64(0)
 	rootAccount.SequenceManager = &seqManager
 	database = database.AddAccount(&rootAccount)
-
-	// mutator := getValidCreateAccountMutator(rootAccount)
 
 	return database, nil
 }
@@ -141,15 +137,16 @@ func sliceToFixedArray(data []byte) [32]byte {
 }
 
 type InMemoryDatabase struct {
-	orderedData       *circularBuffer.CircularBuffer
+	orderedData       []*AccountEntry
 	mappedData        map[string]*AccountEntry
-	orderedTrustlines *circularBuffer.CircularBuffer
+	orderedTrustlines []*TrustLineEntry
 	sequenceProvider  SequenceNumberFetcher
+	accountCounter    int
 }
 
 func NewInMemoryDatabase(sequenceFetcher SequenceNumberFetcher) Database {
 	dataMap := make(map[string]*AccountEntry)
-	return &InMemoryDatabase{orderedData: circularBuffer.NewCircularBuffer(1000), mappedData: dataMap, sequenceProvider: sequenceFetcher}
+	return &InMemoryDatabase{orderedData: make([]*AccountEntry, 0, 1000000), mappedData: dataMap, sequenceProvider: sequenceFetcher, accountCounter: 0}
 }
 
 func (data *InMemoryDatabase) BeginTransaction() {
@@ -159,52 +156,54 @@ func (data *InMemoryDatabase) EndTransaction() {
 }
 
 func (data *InMemoryDatabase) RejectTransaction() {
-	// for _, tuple := range data.backup {
-	// 	*tuple.new = tuple.old
-	// }
-	// if len(data.added) >= len(data.orderedData) {
-	// 	data.added = []*AccountEntry{}
-	// 	// TODO clear rest
-	// } else {
-	// 	for _, added := range data.added {
-	// 		delete(data.mappedData, added.Keypair.GetSeed().Address())
-	// 	}
-	// }
 }
 
 func (data *InMemoryDatabase) GetAccountByOrder(order int) *AccountEntry {
-	value := data.orderedData.Get(order).(*AccountEntry)
-	// data.backup = append(data.backup, tuple{old: *value, new: value})
+	value := data.orderedData[order]
 	return value
 }
 
 func (data *InMemoryDatabase) GetAccountsCount() int {
-	return data.orderedData.Count()
+	return len(data.orderedData)
 }
 
+var addAccountRand = rand.New(rand.NewSource(0))
+
+// reservoir sampling of accounts
 func (data *InMemoryDatabase) AddAccount(account *AccountEntry) Database {
-	_, removed, wasRemoved := data.orderedData.Add(account)
-	data.mappedData[account.Keypair.GetSeed().Address()] = account
-	if wasRemoved {
-		removedAccount := removed.(*AccountEntry)
-		delete(data.mappedData, removedAccount.Keypair.GetSeed().Address())
-	}
 	if account.SequenceManager == nil {
 		account.SequenceManager = &SequenceInitilizer{account: account, seqProvider: data.sequenceProvider}
 	}
+	data.accountCounter++
+	var include int
+	if data.accountCounter < cap(data.orderedData) {
+		data.orderedData = append(data.orderedData, nil)
+		include = len(data.orderedData) - 1
+	} else {
+		include = addAccountRand.Intn(data.accountCounter + 1)
+	}
+	if include < len(data.orderedData) {
+		prevValue := data.orderedData[include]
+		if prevValue != nil {
+			delete(data.mappedData, prevValue.Keypair.GetSeed().Address())
+		}
+		data.orderedData[include] = account
+		data.mappedData[account.Keypair.GetSeed().Address()] = account
+	}
+
 	return data
 }
 
 func (data *InMemoryDatabase) GetTrustLineByOrder(ix int) *TrustLineEntry {
-	return data.orderedTrustlines.Get(ix).(*TrustLineEntry)
+	return data.orderedTrustlines[ix]
 }
 
 func (data *InMemoryDatabase) GetTrustLineCount() int {
-	return data.orderedTrustlines.Count()
+	return len(data.orderedTrustlines)
 }
 
 func (data *InMemoryDatabase) AddTrustLine(trustline *TrustLineEntry) {
-	data.orderedTrustlines.Add(trustline)
+	data.orderedTrustlines = append(data.orderedTrustlines, trustline)
 }
 
 func (data *InMemoryDatabase) GetAccountByAddress(address string) *AccountEntry {
@@ -275,18 +274,15 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	var commitOperations []CommitResult
 	var rejectOperations []RejectResult
 	sourceAccount = getRandomAccountWithNonZeroSequence(database)
-	// TODO get an account with different than 0 sequence number
 	Logger.Printf("using following source account: %s", sourceAccount.Keypair.GetSeed())
 	sourceBalance := int64(sourceAccount.Balance)
 	availableAmount := sourceBalance - minimalBalance
 	if availableAmount <= 0 {
 		Logger.Print("account's balance lower than minimal balance")
-		// continue
 		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
 	if availableAmount <= minimalOperation {
 		Logger.Printf("account's balance is too small: %d (expected %d)", availableAmount, minimalOperation)
-		// continue
 		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
 	availableAmount = txRand.Int63n(availableAmount-minimalOperation) + minimalOperation
@@ -301,7 +297,6 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	seq, seqError := sourceAccount.GetSequence()
 	if seqError != nil {
 		Logger.Print("error while getting account's sequence number")
-		// continue
 		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
 
@@ -325,26 +320,26 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 		operations = append(operations, mutator)
 		commitOperations = append(commitOperations, commitOperation)
 		rejectOperations = append(rejectOperations, rejectOperation)
-		sourceAccount.Balance -= xdr.Int64(baseFee)
+		// sourceAccount.Balance -= xdr.Int64(baseFee)
 	}
+	sourceAccount.Balance -= xdr.Int64(baseFee) * xdr.Int64(len(commitOperations))
 
 	transaction = build.Transaction(
 		operations...,
 	)
 
-	return transaction, sourceAccount, func(database Database) Database {
+	return transaction, sourceAccount,
+		func(database Database) Database {
 			for _, operation := range commitOperations {
 				database = operation(database)
 			}
 			return database
 		},
 		func(database Database) Database {
-			seq.Sequence++
+			seq.Sequence--
 			sourceAccount.SetSequence(seq)
 
-			for range commitOperations {
-				sourceAccount.Balance += xdr.Int64(baseFee)
-			}
+			// sourceAccount.Balance += xdr.Int64(baseFee) * xdr.Int64(len(commitOperations))
 			return database
 		}
 }
@@ -434,7 +429,8 @@ func GetValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator 
 		Logger.Printf("created CreateAccount tx: %+v", result)
 		Logger.Printf("created account's balance is %d", amount)
 
-		return &result, func(database Database) Database {
+		return &result,
+			func(database Database) Database {
 				newAccount := &AccountEntry{Keypair: destinationKeypair}
 				newAccount.Balance = xdr.Int64(startingBalance)
 				database.AddAccount(newAccount)
@@ -454,14 +450,15 @@ func getNextKeypair() SeedProvider {
 	return Uint64(privateKeyIndex)
 }
 
+func CreateNewAccount() AccountEntry {
+	destinationKeypair := getNextKeypair()
+	return AccountEntry{Keypair: destinationKeypair}
+}
+
 func generateRandomKeypair() *keypair.Full {
 	keypair, _ := keypair.Random()
 	return keypair
 }
-
-// func fullKeypairToRawBytes(full *keypair.Full) [32]byte {
-// 	return sliceToFixedArray(strkey.MustDecode(strkey.VersionByteSeed, full.Seed()))
-// }
 
 func rawKeyToString(key [32]byte) string {
 	return strkey.MustEncode(strkey.VersionByteAccountID, key[:])
@@ -641,14 +638,14 @@ var mOfNRandSlice = rand.New(rand.NewSource(0))
 
 func GetUniformMofNFromSlice(data []int, size int) []int {
 	var result []int = make([]int, 0, size)
-	selected := map[int]bool{}
-	for ix := len(data) - size; ix < len(data); ix++ {
-		selectedIndex := mOfNRandSlice.Intn(ix)
-		if selected[selectedIndex] {
-			selectedIndex = ix
+	for ix := 0; ix < size; ix++ {
+		result[ix] = data[ix]
+	}
+	for ix := size; ix < len(data); ix++ {
+		selectedIx := mOfNRandSlice.Intn(ix + 1)
+		if selectedIx < size {
+			result[selectedIx] = data[ix]
 		}
-		selected[selectedIndex] = true
-		result = append(result, data[selectedIndex])
 	}
 	return result
 }
