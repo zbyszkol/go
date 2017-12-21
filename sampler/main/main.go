@@ -120,10 +120,11 @@ func benchmarkScenario(
 	accountFetcher AccountFetcher,
 	sequenceFetcher SequenceNumberFetcher,
 	txRate,
-	expectedNumberOfAccounts uint) {
+	expectedNumberOfAccounts uint32) {
 
-	accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: 100}
-	var accountSampler TransactionGenerator = NewTransactionGenerator(accountGenerator)
+	// TODO commented due to new accounts generation mechanism
+	// accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: 100}
+	// var accountSampler TransactionGenerator = NewTransactionGenerator(accountGenerator)
 
 	var database Database = NewInMemoryDatabase(sequenceFetcher)
 	localSampler := newCommitHelper(database)
@@ -134,27 +135,32 @@ func benchmarkScenario(
 	}
 
 	// create some amount of accounts
-	for accountsCount, createdAccounts := uint(0), uint(0); accountsCount < expectedNumberOfAccounts; accountsCount += createdAccounts {
+	Logger.Println("Starting benchmark's accounts creation procedure")
 
-		localSampler.processCommitQueue()
+	database = InitializeAccounts(submitter, database.GetAccountByOrder(0), database, uint64(expectedNumberOfAccounts), 100)
 
-		createdAccounts = 0
-		collisionLimit := uint(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
-		for it := uint(0); it < txRate && it < collisionLimit; it++ {
-			accountsNumber, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, accountSampler)
-			if txError != nil {
-				Logger.Printf("error while committing a transaction: %s", txError)
-				continue
-			}
-			createdAccounts += accountsNumber
+	// for accountsCount, createdAccounts := uint(0), uint(0); accountsCount < expectedNumberOfAccounts; accountsCount += createdAccounts {
 
-			localSampler.addToCommitQueue(sequenceUpdate, commitTx)
-		}
-		Logger.Printf("Collision limit was %d", collisionLimit)
-		Logger.Printf("Created %d new accounts", createdAccounts)
+	// 	localSampler.processCommitQueue()
 
-		<-time.NewTicker(time.Second).C
-	}
+	// 	createdAccounts = 0
+	// 	collisionLimit := uint(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
+	// 	for it := uint(0); it < txRate && it < collisionLimit; it++ {
+	// 		accountsNumber, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, accountSampler)
+	// 		if txError != nil {
+	// 			Logger.Printf("error while committing a transaction: %s", txError)
+	// 			continue
+	// 		}
+	// 		createdAccounts += accountsNumber
+
+	// 		localSampler.addToCommitQueue(sequenceUpdate, commitTx)
+	// 	}
+	// 	Logger.Printf("Collision limit was %d", collisionLimit)
+	// 	Logger.Printf("Created %d new accounts", createdAccounts)
+
+	// 	<-time.NewTicker(time.Second).C
+	// }
+
 	Logger.Println("Accounts creation procedure finished")
 
 	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100}
@@ -166,9 +172,9 @@ func benchmarkScenario(
 
 		localSampler.processCommitQueue()
 
-		collisionLimit := uint(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
+		collisionLimit := uint32(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
 		Logger.Printf("Collision limit is %d", collisionLimit)
-		for it := uint(0); it < txRate && it < collisionLimit; it++ {
+		for it := uint32(0); it < txRate && it < collisionLimit; it++ {
 			_, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, paymentSampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
@@ -196,7 +202,7 @@ func main() {
 	// failureDetector(*postgresConnectionString, 1000)
 	// return
 
-	const txRate, expectedNumberOfAccounts uint = 1000, 1000000
+	const txRate, expectedNumberOfAccounts uint32 = 1000, 1000000
 
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(30 * time.Second)
