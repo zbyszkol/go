@@ -153,14 +153,14 @@ func benchmarkScenario(
 		Logger.Printf("Collision limit was %d", collisionLimit)
 		Logger.Printf("Created %d new accounts", createdAccounts)
 
-		<-time.NewTicker(5 * time.Second).C
+		<-time.NewTicker(time.Second).C
 	}
 	Logger.Println("Accounts creation procedure finished")
 
 	paymentGenerator := GeneratorsListEntry{Generator: GetValidPaymentMutatorNative, Bias: 100}
 	paymentSampler := NewTransactionGenerator(paymentGenerator)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(time.Second)
 
 	for {
 
@@ -172,7 +172,7 @@ func benchmarkScenario(
 			_, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, paymentSampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
-				panic("error while committing a transaction")
+				continue
 			}
 
 			localSampler.addToCommitQueue(sequenceUpdate, commitTx)
@@ -199,7 +199,7 @@ func main() {
 	const txRate, expectedNumberOfAccounts uint = 1000, 1000000
 
 	httpClient := http.DefaultClient
-	httpClient.Timeout = time.Duration(10 * time.Second)
+	httpClient.Timeout = time.Duration(30 * time.Second)
 	var submitter TxSubmitter
 	var accountFetcher AccountFetcher
 	var sequenceFetcher SequenceNumberFetcher
@@ -208,8 +208,3 @@ func main() {
 
 	// TODO write looper which just generates transactions and write them into a file/output then play them back to stellar-core
 }
-
-// TODO new version of the sampler:
-// 1) generate some number of accounts with same startingBalance
-// 2) pause
-// 3) use them for generating payment transactions

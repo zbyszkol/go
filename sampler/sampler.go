@@ -259,10 +259,10 @@ func getRandomAccountWithNonZeroSequence(database Database) *AccountEntry {
 }
 
 const (
-	baseFee          int64 = 100
-	baseReserve      int64 = 10 * amount.One
-	minimalBalance   int64 = 2 * baseReserve
-	minimalOperation       = baseFee + minimalBalance
+	BaseFee          int64 = 100
+	BaseReserve      int64 = 10 * amount.One
+	MinimalBalance   int64 = 2 * BaseReserve
+	MinimalOperation       = BaseFee + MinimalBalance
 )
 
 var txRand = rand.New(rand.NewSource(0))
@@ -276,21 +276,21 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	sourceAccount = getRandomAccountWithNonZeroSequence(database)
 	Logger.Printf("using following source account: %s", sourceAccount.Keypair.GetSeed())
 	sourceBalance := int64(sourceAccount.Balance)
-	availableAmount := sourceBalance - minimalBalance
+	availableAmount := sourceBalance - MinimalBalance
 	if availableAmount <= 0 {
 		Logger.Print("account's balance lower than minimal balance")
 		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
-	if availableAmount <= minimalOperation {
-		Logger.Printf("account's balance is too small: %d (expected %d)", availableAmount, minimalOperation)
+	if availableAmount <= MinimalOperation {
+		Logger.Printf("account's balance is too small: %d (expected %d)", availableAmount, MinimalOperation)
 		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
-	availableAmount = txRand.Int63n(availableAmount-minimalOperation) + minimalOperation
+	availableAmount = txRand.Int63n(availableAmount-MinimalOperation) + MinimalOperation
 	Logger.Printf("going to spend %d out of %d", availableAmount, sourceBalance)
-	maximalNumberOfOperations := availableAmount / minimalOperation
+	maximalNumberOfOperations := availableAmount / MinimalOperation
 	maximalNumberOfOperations = min(maximalNumberOfOperations, 100)
 	size := opRand.Intn(int(maximalNumberOfOperations)) + 1
-	availableAmount -= int64(size) * minimalOperation
+	availableAmount -= int64(size) * MinimalOperation
 	balancePartition := GetRandomPartitionWithoutZeros(availableAmount, size)
 	Logger.Printf("balance's partition: %v", balancePartition)
 
@@ -312,7 +312,7 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 	rejectOperations = []RejectResult{}
 	for _, value := range balancePartition {
 		generator := sampler.generators(sourceAccount)
-		mutator, commitOperation, rejectOperation := generator(uint64(value+minimalBalance), database)
+		mutator, commitOperation, rejectOperation := generator(uint64(value+MinimalBalance), database)
 		if mutator == nil {
 			Logger.Printf("sampled a nil transaction mutator")
 			continue
@@ -320,9 +320,9 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 		operations = append(operations, mutator)
 		commitOperations = append(commitOperations, commitOperation)
 		rejectOperations = append(rejectOperations, rejectOperation)
-		// sourceAccount.Balance -= xdr.Int64(baseFee)
+		// sourceAccount.Balance -= xdr.Int64(BaseFee)
 	}
-	sourceAccount.Balance -= xdr.Int64(baseFee) * xdr.Int64(len(commitOperations))
+	sourceAccount.Balance -= xdr.Int64(BaseFee) * xdr.Int64(len(commitOperations))
 
 	transaction = build.Transaction(
 		operations...,
@@ -339,7 +339,7 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 			seq.Sequence--
 			sourceAccount.SetSequence(seq)
 
-			// sourceAccount.Balance += xdr.Int64(baseFee) * xdr.Int64(len(commitOperations))
+			// sourceAccount.Balance += xdr.Int64(BaseFee) * xdr.Int64(len(commitOperations))
 			return database
 		}
 }
@@ -417,15 +417,15 @@ func getRandomGenerator(generators generatorsList, sourceAccount *AccountEntry) 
 
 func GetValidCreateAccountMutator(sourceAccount *AccountEntry) MutatorGenerator {
 	return func(startingBalance uint64, database Database) (build.TransactionMutator, CommitResult, RejectResult) {
-		destinationKeypair := getNextKeypair() // generateRandomKeypair()
+		destinationKeypair := getNextKeypair()
 		Logger.Printf("generated account for CreateAccount operation: seed - %s, public - %s", destinationKeypair.GetSeed(), destinationKeypair.GetSeed().Address())
 		// TODO set seqnum to ledgernum << 32
 		destination := build.Destination{destinationKeypair.GetSeed().Address()}
 		amount := build.NativeAmount{amount.String(xdr.Int64(startingBalance))}
+		result := build.CreateAccount(destination, amount)
 
 		sourceAccount.Balance -= xdr.Int64(int64(startingBalance))
 
-		result := build.CreateAccount(destination, amount)
 		Logger.Printf("created CreateAccount tx: %+v", result)
 		Logger.Printf("created account's balance is %d", amount)
 
