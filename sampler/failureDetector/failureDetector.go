@@ -56,8 +56,8 @@ func (impl *txResultIterator) Get() *txsub.Result {
 }
 
 type transactionsIteratorImpl struct {
-	ledgerNumber uint32
-	toLedger     uint32
+	ledgerNumber uint64
+	toLedger     uint64
 	inLedgerIx   int
 	txs          []core.Transaction
 	core         *core.Q
@@ -97,7 +97,7 @@ func Filter(filterFunc func(*core.Transaction) bool, iterator TransactionsIterat
 	return NewFilteredTransactionsIterator(filterFunc, iterator)
 }
 
-func NewTransactionsIterator(coreQ *core.Q, fromLedger, toLedger uint32) TransactionsIterator {
+func NewTransactionsIterator(coreQ *core.Q, fromLedger, toLedger uint64) TransactionsIterator {
 	return &transactionsIteratorImpl{ledgerNumber: fromLedger - 1, toLedger: toLedger, inLedgerIx: 0, txs: []core.Transaction{}, core: coreQ}
 }
 
@@ -132,7 +132,7 @@ func (impl *transactionsIteratorImpl) Get() *core.Transaction {
 	return &impl.txs[impl.inLedgerIx]
 }
 
-func FindFailedTransactions(coreQ *core.Q, toLedgerNum uint32) TransactionsIterator {
+func FindFailedTransactions(coreQ *core.Q, toLedgerNum uint64) TransactionsIterator {
 	iterator := NewTransactionsIterator(coreQ, 1, toLedgerNum)
 	filter := func(tx *core.Transaction) bool {
 		return !tx.IsSuccessful()
@@ -140,7 +140,7 @@ func FindFailedTransactions(coreQ *core.Q, toLedgerNum uint32) TransactionsItera
 	return NewFilteredTransactionsIterator(filter, iterator)
 }
 
-func GetAllTransactions(core *core.Q, toLedgerNum uint32) TransactionsIterator {
+func GetAllTransactions(core *core.Q, toLedgerNum uint64) TransactionsIterator {
 	return NewTransactionsIterator(core, 1, toLedgerNum)
 }
 

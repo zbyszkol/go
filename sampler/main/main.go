@@ -3,11 +3,9 @@ package main
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"github.com/stellar/go/build"
 	. "github.com/stellar/go/sampler"
 	. "github.com/stellar/go/sampler/failureDetector"
-	"github.com/stellar/horizon/db2/core"
 	"math"
 	"net/http"
 	"time"
@@ -18,11 +16,10 @@ const Debug bool = true
 type CommitHelper struct {
 	waitCommitQueue []CommitResult
 	commitQueue     []CommitResult
-	database        Database
 }
 
-func NewCommitHelper(database Database) CommitHelper {
-	return CommitHelper{waitCommitQueue: []CommitResult{}, commitQueue: []CommitResult{}, database: database}
+func NewCommitHelper() CommitHelper {
+	return CommitHelper{waitCommitQueue: []CommitResult{}, commitQueue: []CommitResult{}}
 }
 
 func singleTransaction(database Database, submitter TxSubmitter, sampler TransactionGenerator) (uint, func() (*build.Sequence, error), CommitResult, error) {
@@ -45,7 +42,6 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	if submitResult.Err != nil {
 		Logger.Printf("tx submit rejected: %s", submitResult.Err)
 		database = rejectTransaction(database)
-		// panic("tx submit rejected")
 
 		return 0, nil, nil, errors.New("tx submit rejected")
 	}
@@ -59,43 +55,22 @@ func (helper *CommitHelper) AddToCommitQueue(confirm func() (*build.Sequence, er
 	helper.waitCommitQueue = append(helper.waitCommitQueue, commit)
 }
 
-func (helper *CommitHelper) ProcessCommitQueue() {
+func (helper *CommitHelper) ProcessCommitQueue(database Database) Database {
 	Logger.Print("processing the commit queue")
 
 	for _, commit := range helper.commitQueue {
-		helper.database = commit(helper.database)
+		database = commit(database)
 	}
 	tmp := helper.commitQueue
 	helper.commitQueue = helper.waitCommitQueue
 	helper.waitCommitQueue = tmp[0:0]
 
 	Logger.Println("commit queue processed")
-}
-
-func handleTransactionError(database Database, transactionResult func() (*core.Transaction, error)) Database {
-	database.RejectTransaction()
-	coreResult, transError := transactionResult()
-	Logger.Printf("core result: %+v", coreResult)
-	if transError != nil {
-		Logger.Print("that's it, rejecting")
-	} else {
-		Logger.Print("applying changes")
-		if coreResult != nil {
-			if !coreResult.IsSuccessful() {
-				Logger.Printf("transaction was failed")
-				panic("transaction was failed")
-			}
-			database = ApplyChanges(&coreResult.ResultMeta, database)
-		} else {
-			Logger.Printf("coreResult is nil")
-		}
-	}
 	return database
 }
 
-func failureDetector(postgresConnectionString string, ledgerNumber uint32) {
+func failureDetector(postgresConnectionString string, ledgerNumber uint64) {
 	coreDb := NewDbSession(postgresConnectionString)
-	// TODO move this magic number as a parameter
 	iterator := FindFailedTransactions(coreDb, ledgerNumber)
 	noError := true
 	for hasNext, error := iterator.Next(); hasNext; hasNext, error = iterator.Next() {
@@ -104,13 +79,13 @@ func failureDetector(postgresConnectionString string, ledgerNumber uint32) {
 			Logger.Printf("error while iterating transactions: %s", error)
 		}
 		tx := iterator.Get()
-		fmt.Println("------------------------")
+		Logger.Println("------------------------")
 		PrintFailuresFromCoreTx(tx)
-		fmt.Println()
-		fmt.Println("------------------------")
+		Logger.Println()
+		Logger.Println("------------------------")
 	}
 	if noError {
-		fmt.Println("no tx error")
+		Logger.Println("no tx error")
 	}
 }
 
@@ -122,44 +97,17 @@ func benchmarkScenario(
 	txRate,
 	expectedNumberOfAccounts uint32) {
 
-	// TODO commented due to new accounts generation mechanism
-	// accountGenerator := GeneratorsListEntry{Generator: GetValidCreateAccountMutator, Bias: 100}
-	// var accountSampler TransactionGenerator = NewTransactionGenerator(accountGenerator)
-
 	var database Database = NewInMemoryDatabase(sequenceFetcher)
-	localSampler := NewCommitHelper(database)
+	localSampler := NewCommitHelper()
 
 	database, rootError := AddRootAccount(database, accountFetcher, sequenceFetcher)
 	if rootError != nil {
 		panic("Unable to add the root account.")
 	}
 
-	// create some amount of accounts
 	Logger.Println("Starting benchmark's accounts creation procedure")
 
-	database = InitializeAccounts(submitter, database.GetAccountByOrder(0), database, uint64(expectedNumberOfAccounts), 100)
-
-	// for accountsCount, createdAccounts := uint(0), uint(0); accountsCount < expectedNumberOfAccounts; accountsCount += createdAccounts {
-
-	// 	localSampler.processCommitQueue()
-
-	// 	createdAccounts = 0
-	// 	collisionLimit := uint(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
-	// 	for it := uint(0); it < txRate && it < collisionLimit; it++ {
-	// 		accountsNumber, sequenceUpdate, commitTx, txError := singleTransaction(database, submitter, accountSampler)
-	// 		if txError != nil {
-	// 			Logger.Printf("error while committing a transaction: %s", txError)
-	// 			continue
-	// 		}
-	// 		createdAccounts += accountsNumber
-
-	// 		localSampler.addToCommitQueue(sequenceUpdate, commitTx)
-	// 	}
-	// 	Logger.Printf("Collision limit was %d", collisionLimit)
-	// 	Logger.Printf("Created %d new accounts", createdAccounts)
-
-	// 	<-time.NewTicker(time.Second).C
-	// }
+	database = InitializeAccounts(submitter, database, uint64(expectedNumberOfAccounts), txRate)
 
 	Logger.Println("Accounts creation procedure finished")
 
@@ -170,9 +118,9 @@ func benchmarkScenario(
 
 	for {
 
-		localSampler.ProcessCommitQueue()
+		database = localSampler.ProcessCommitQueue(database)
 
-		collisionLimit := uint32(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
+		collisionLimit := uint32(math.Sqrt(float64(database.GetAccountsCount())))
 		Logger.Printf("Collision limit is %d", collisionLimit)
 		for it := uint32(0); it < txRate && it < collisionLimit; it++ {
 			_, sequenceUpdate, commitTx, txError := singleTransaction(database, submitter, paymentSampler)
@@ -189,25 +137,22 @@ func benchmarkScenario(
 }
 
 func main() {
-	// test()
-	// return
-
 	postgresConnectionString := flag.String("pg", "dbname=core host=localhost user=stellar password=__PGPASS__", "PostgreSQL connection string")
 	stellarCoreURL := flag.String("core", "http://localhost:11626", "stellar-core http endpoint's url")
+	failure_flag := "failure_detector"
+	ledgerNumber := flag.Uint64(failure_flag, 0, "max ledger number for failure searching procedure")
+
 	flag.Parse()
 
-	// failureDetector(*postgresConnectionString, 1000)
-	// return
+	if *ledgerNumber > 0 {
+		failureDetector(*postgresConnectionString, *ledgerNumber)
+		return
+	}
 
-	const txRate, expectedNumberOfAccounts uint32 = 1000, 1000000
+	const txRate, expectedNumberOfAccounts uint32 = 10000, 1000000
 
 	httpClient := http.DefaultClient
 	httpClient.Timeout = time.Duration(10 * time.Minute)
-	var submitter TxSubmitter
-	var accountFetcher AccountFetcher
-	var sequenceFetcher SequenceNumberFetcher
-	submitter, accountFetcher, sequenceFetcher = NewTxSubmitter(httpClient, *stellarCoreURL, *postgresConnectionString)
+	submitter, accountFetcher, sequenceFetcher := NewTxSubmitter(httpClient, *stellarCoreURL, *postgresConnectionString)
 	benchmarkScenario(httpClient, submitter, accountFetcher, sequenceFetcher, txRate, expectedNumberOfAccounts)
-
-	// TODO write looper which just generates transactions and write them into a file/output then play them back to stellar-core
 }
