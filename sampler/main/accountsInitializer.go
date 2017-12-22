@@ -16,10 +16,12 @@ func InitializeAccounts(submitter TxSubmitter, rootAccount *AccountEntry, databa
 	var balancePerAccount uint64 = uint64(rootAccount.Balance) / numberOfAccounts
 	accountIx := 0
 	accountsPerTx := txMaxSize
-	commitOperations := []CommitResult{}
+	commitHelper := NewCommitHelper(database)
 	for accountsLeft := numberOfAccounts; accountsLeft > 0; {
 
-		for nTx := uint32(0); nTx < txRate && accountsLeft > 0 && accountIx < database.GetAccountsCount(); accountIx++ {
+		commitHelper.ProcessCommitQueue()
+
+		for nTx := uint32(0); nTx < txRate && accountsLeft > 0 && accountIx < database.GetAccountsCount(); accountIx, nTx = accountIx+1, nTx+1 {
 			if accountsPerTx > accountsLeft {
 				accountsPerTx = accountsLeft
 			}
@@ -27,24 +29,22 @@ func InitializeAccounts(submitter TxSubmitter, rootAccount *AccountEntry, databa
 			txBuilder, commitResult, newAccounts := buildCreateAccountTx(sourceAccount, balancePerAccount, accountsPerTx)
 			submitResult, _, _ := submitter.Submit(sourceAccount, txBuilder)
 			if submitResult.Err != nil {
+				Logger.Printf("tx rejected: %s", submitResult.Err)
 				panic("tx rejected")
 			}
-			commitOperations = append(commitOperations, commitResult)
+			commitHelper.AddToCommitQueue(nil, commitResult)
 			accountsLeft -= newAccounts
 		}
+		Logger.Println("Round finished, waiting for next round...")
 		<-time.NewTicker(10 * time.Second).C
-		for _, commit := range commitOperations {
-			database = commit(database)
-		}
-		commitOperations = commitOperations[0:0]
 	}
 	return database
 }
 
 func buildCreateAccountTx(sourceAccount *AccountEntry, amountLeft, accountsPerTx uint64) (*build.TransactionBuilder, CommitResult, uint64) {
 
-	var startingBalance int64 = int64((int64(sourceAccount.Balance) - int64(int64(amountLeft)+BaseFee)) / int64(accountsPerTx))
-	sourceAccount.Balance -= xdr.Int64(int64(uint64(startingBalance) * accountsPerTx))
+	var startingBalance int64 = (int64(sourceAccount.Balance) - int64(amountLeft+accountsPerTx*uint64(BaseFee))) / int64(accountsPerTx)
+	sourceAccount.Balance -= xdr.Int64(uint64(startingBalance)*accountsPerTx + accountsPerTx*uint64(BaseFee))
 	seq, seqError := sourceAccount.GetSequence()
 	if seqError != nil {
 		Logger.Print("error while getting account's sequence number")

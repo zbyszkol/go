@@ -15,19 +15,19 @@ import (
 
 const Debug bool = true
 
-func newCommitHelper(database Database) commitHelper {
-	return commitHelper{waitCommitQueue: []CommitResult{}, commitQueue: []CommitResult{}, database: database}
-}
-
-type commitHelper struct {
+type CommitHelper struct {
 	waitCommitQueue []CommitResult
 	commitQueue     []CommitResult
 	database        Database
 }
 
-func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler TransactionGenerator) (uint, func() (*build.Sequence, error), CommitResult, error) {
-	database := this.database
+func NewCommitHelper(database Database) CommitHelper {
+	return CommitHelper{waitCommitQueue: []CommitResult{}, commitQueue: []CommitResult{}, database: database}
+}
+
+func singleTransaction(database Database, submitter TxSubmitter, sampler TransactionGenerator) (uint, func() (*build.Sequence, error), CommitResult, error) {
 	var operationsCount uint = 0
+	// TODO remove this
 	database.BeginTransaction()
 	defer database.EndTransaction()
 
@@ -55,11 +55,11 @@ func (this *commitHelper) singleTransaction(submitter TxSubmitter, sampler Trans
 	return operationsCount, sequenceUpdate, commitTransaction, nil
 }
 
-func (helper *commitHelper) addToCommitQueue(confirm func() (*build.Sequence, error), commit CommitResult) {
+func (helper *CommitHelper) AddToCommitQueue(confirm func() (*build.Sequence, error), commit CommitResult) {
 	helper.waitCommitQueue = append(helper.waitCommitQueue, commit)
 }
 
-func (helper *commitHelper) processCommitQueue() {
+func (helper *CommitHelper) ProcessCommitQueue() {
 	Logger.Print("processing the commit queue")
 
 	for _, commit := range helper.commitQueue {
@@ -127,7 +127,7 @@ func benchmarkScenario(
 	// var accountSampler TransactionGenerator = NewTransactionGenerator(accountGenerator)
 
 	var database Database = NewInMemoryDatabase(sequenceFetcher)
-	localSampler := newCommitHelper(database)
+	localSampler := NewCommitHelper(database)
 
 	database, rootError := AddRootAccount(database, accountFetcher, sequenceFetcher)
 	if rootError != nil {
@@ -146,7 +146,7 @@ func benchmarkScenario(
 	// 	createdAccounts = 0
 	// 	collisionLimit := uint(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
 	// 	for it := uint(0); it < txRate && it < collisionLimit; it++ {
-	// 		accountsNumber, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, accountSampler)
+	// 		accountsNumber, sequenceUpdate, commitTx, txError := singleTransaction(database, submitter, accountSampler)
 	// 		if txError != nil {
 	// 			Logger.Printf("error while committing a transaction: %s", txError)
 	// 			continue
@@ -170,25 +170,22 @@ func benchmarkScenario(
 
 	for {
 
-		localSampler.processCommitQueue()
+		localSampler.ProcessCommitQueue()
 
 		collisionLimit := uint32(math.Sqrt(float64(localSampler.database.GetAccountsCount())))
 		Logger.Printf("Collision limit is %d", collisionLimit)
 		for it := uint32(0); it < txRate && it < collisionLimit; it++ {
-			_, sequenceUpdate, commitTx, txError := localSampler.singleTransaction(submitter, paymentSampler)
+			_, sequenceUpdate, commitTx, txError := singleTransaction(database, submitter, paymentSampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
 				continue
 			}
 
-			localSampler.addToCommitQueue(sequenceUpdate, commitTx)
+			localSampler.AddToCommitQueue(sequenceUpdate, commitTx)
 		}
 		Logger.Print("transactions generated with the specified txRate")
 		<-ticker.C
 	}
-}
-
-func (this *commitHelper) prepareAccounts(submitter TxSubmitter, accountSampler TransactionGenerator) {
 }
 
 func main() {
@@ -205,7 +202,7 @@ func main() {
 	const txRate, expectedNumberOfAccounts uint32 = 1000, 1000000
 
 	httpClient := http.DefaultClient
-	httpClient.Timeout = time.Duration(30 * time.Second)
+	httpClient.Timeout = time.Duration(10 * time.Minute)
 	var submitter TxSubmitter
 	var accountFetcher AccountFetcher
 	var sequenceFetcher SequenceNumberFetcher
