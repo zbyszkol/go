@@ -107,7 +107,7 @@ func benchmarkScenario(
 
 	Logger.Println("Starting benchmark's accounts creation procedure")
 
-	database = InitializeAccounts(submitter, database, uint64(expectedNumberOfAccounts), txRate)
+	database = InitializeAccounts(submitter, database, uint64(expectedNumberOfAccounts), 50)
 
 	Logger.Println("Accounts creation procedure finished")
 
