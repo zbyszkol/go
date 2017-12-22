@@ -35,7 +35,7 @@ func InitializeAccounts(submitter TxSubmitter, database Database, numberOfAccoun
 				database = rejectTx(database)
 				continue
 			}
-			commitHelper.AddToCommitQueue(nil, commitResult)
+			commitHelper.AddToCommitQueue(commitResult)
 			accountsLeft -= newAccounts
 
 			database.EndTransaction()

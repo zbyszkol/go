@@ -12,21 +12,6 @@ import (
 	"github.com/stellar/horizon/txsub"
 )
 
-// func main() {
-// 	postgresConnectionString := flag.String("pg", "dbname=core host=localhost user=stellar password=__PGPASS__", "PostgreSQL connection string")
-// 	coreDb := NewDbSession(*postgresConnectionString)
-// 	iterator := FindFailedTransactions(coreDb, 9000)
-// 	for hasNext, error := iterator.Next(); hasNext; hasNext, error = iterator.Next() {
-// 		if error != nil {
-// 			Logger.Printf("error while iterating transactions: %s", error)
-// 		}
-// 		tx := iterator.Get()
-// 		fmt.Println("------------------------")
-// 		fmt.Printf("%+v", tx)
-// 		fmt.Println("------------------------")
-// 	}
-// }
-
 type TransactionsIterator interface {
 	Next() (bool, error)
 	Get() *core.Transaction
@@ -75,17 +60,17 @@ func NewFilteredTransactionsIterator(filter func(*core.Transaction) bool, iterat
 func (impl *filteredTransactionsIteratorImpl) Next() (bool, error) {
 	Logger.Print("called filtered Next()")
 	for hasNext, error := impl.iterator.Next(); hasNext; hasNext, error = impl.iterator.Next() {
-		Logger.Printf("searching to filter...")
+		Logger.Println("searching to filter...")
 		if !hasNext {
-			Logger.Printf("false")
+			Logger.Println("false")
 			return hasNext, error
 		}
 		if impl.filter(impl.iterator.Get()) {
-			Logger.Printf("filtered")
+			Logger.Println("filtered")
 			return true, nil
 		}
 	}
-	Logger.Printf("nothing left")
+	Logger.Println("nothing left")
 	return false, nil
 }
 
@@ -112,19 +97,18 @@ func (impl *transactionsIteratorImpl) Next() (bool, error) {
 	impl.inLedgerIx = 0
 	impl.txs = []core.Transaction{}
 	for impl.ledgerNumber++; impl.ledgerNumber <= impl.toLedger; impl.ledgerNumber++ {
-		Logger.Printf("ledger number: %d", impl.ledgerNumber)
+		Logger.Printf("ledger number: %d\n", impl.ledgerNumber)
 		error := impl.core.TransactionsByLedger(&impl.txs, int32(impl.ledgerNumber))
 		if error != nil {
 			// impl.ledgerNumber--
-			Logger.Printf("error while downloading transactions")
+			Logger.Println("error while downloading transactions")
 			return false, error
 		}
 		if len(impl.txs) > 0 {
-			Logger.Printf("has next")
 			return true, nil
 		}
 	}
-	Logger.Printf("ledger number after loop: %d", impl.ledgerNumber)
+	Logger.Printf("ledger number after loop: %d\n", impl.ledgerNumber)
 	return false, nil
 }
 

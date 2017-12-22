@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"github.com/stellar/go/build"
 	. "github.com/stellar/go/sampler"
 	. "github.com/stellar/go/sampler/failureDetector"
@@ -24,7 +25,6 @@ func NewCommitHelper() CommitHelper {
 
 func singleTransaction(database Database, submitter TxSubmitter, sampler TransactionGenerator) (uint, func() (*build.Sequence, error), CommitResult, error) {
 	var operationsCount uint = 0
-	// TODO remove this
 	database.BeginTransaction()
 	defer database.EndTransaction()
 
@@ -51,7 +51,7 @@ func singleTransaction(database Database, submitter TxSubmitter, sampler Transac
 	return operationsCount, sequenceUpdate, commitTransaction, nil
 }
 
-func (helper *CommitHelper) AddToCommitQueue(confirm func() (*build.Sequence, error), commit CommitResult) {
+func (helper *CommitHelper) AddToCommitQueue(commit CommitResult) {
 	helper.waitCommitQueue = append(helper.waitCommitQueue, commit)
 }
 
@@ -79,13 +79,13 @@ func failureDetector(postgresConnectionString string, ledgerNumber uint64) {
 			Logger.Printf("error while iterating transactions: %s", error)
 		}
 		tx := iterator.Get()
-		Logger.Println("------------------------")
+		fmt.Println("------------------------")
 		PrintFailuresFromCoreTx(tx)
-		Logger.Println()
-		Logger.Println("------------------------")
+		fmt.Println()
+		fmt.Println("------------------------")
 	}
 	if noError {
-		Logger.Println("no tx error")
+		fmt.Println("no tx error")
 	}
 }
 
@@ -123,13 +123,13 @@ func benchmarkScenario(
 		collisionLimit := uint32(math.Sqrt(float64(database.GetAccountsCount())))
 		Logger.Printf("Collision limit is %d", collisionLimit)
 		for it := uint32(0); it < txRate && it < collisionLimit; it++ {
-			_, sequenceUpdate, commitTx, txError := singleTransaction(database, submitter, paymentSampler)
+			_, _, commitTx, txError := singleTransaction(database, submitter, paymentSampler)
 			if txError != nil {
 				Logger.Printf("error while committing a transaction: %s", txError)
 				continue
 			}
 
-			localSampler.AddToCommitQueue(sequenceUpdate, commitTx)
+			localSampler.AddToCommitQueue(commitTx)
 		}
 		Logger.Print("transactions generated with the specified txRate")
 		<-ticker.C

@@ -12,6 +12,13 @@ import (
 	"sort"
 )
 
+const (
+	BaseFee          int64 = 100
+	BaseReserve      int64 = 10 * amount.One
+	MinimalBalance   int64 = 2 * BaseReserve
+	MinimalOperation       = BaseFee + MinimalBalance
+)
+
 type AccountEntry struct {
 	xdr.AccountEntry
 	SequenceManager
@@ -21,6 +28,16 @@ type AccountEntry struct {
 type TrustLineEntry struct {
 	xdr.TrustLineEntry
 	Keypair SeedProvider
+}
+
+type Database interface {
+	BeginTransaction()
+	RejectTransaction()
+	EndTransaction()
+	GetAccountByOrder(int) *AccountEntry
+	GetAccountByAddress(string) *AccountEntry
+	AddAccount(*AccountEntry) Database
+	GetAccountsCount() int
 }
 
 type Full struct{ keypair.Full }
@@ -91,20 +108,6 @@ func (full *Full) GetSeed() *Full {
 	return full
 }
 
-type Database interface {
-	BeginTransaction()
-	RejectTransaction()
-	EndTransaction()
-	GetAccountByOrder(int) *AccountEntry
-	GetAccountByAddress(string) *AccountEntry
-	AddAccount(*AccountEntry) Database
-	GetAccountsCount() int
-	GetTrustLineByOrder(int) *TrustLineEntry
-	// GetTrustLineById(accountAddress keypair.KP, issuer keypair.KP, assetcode string) *TrustLineEntry
-	GetTrustLineCount() int
-	AddTrustLine(*TrustLineEntry)
-}
-
 var rootAccount AccountEntry = AccountEntry{}
 
 func AddRootAccount(database Database, accountFetcher AccountFetcher, sequenceProvider SequenceNumberFetcher) (Database, error) {
@@ -136,41 +139,40 @@ func sliceToFixedArray(data []byte) [32]byte {
 	return resultArray
 }
 
-type InMemoryDatabase struct {
-	orderedData       []*AccountEntry
-	mappedData        map[string]*AccountEntry
-	orderedTrustlines []*TrustLineEntry
-	sequenceProvider  SequenceNumberFetcher
-	accountCounter    int
+type inMemoryDatabase struct {
+	orderedData      []*AccountEntry
+	mappedData       map[string]*AccountEntry
+	sequenceProvider SequenceNumberFetcher
+	accountCounter   int
 }
 
 func NewInMemoryDatabase(sequenceFetcher SequenceNumberFetcher) Database {
 	dataMap := make(map[string]*AccountEntry)
-	return &InMemoryDatabase{orderedData: make([]*AccountEntry, 0, 1000000), mappedData: dataMap, sequenceProvider: sequenceFetcher, accountCounter: 0}
+	return &inMemoryDatabase{orderedData: make([]*AccountEntry, 0, 1000000), mappedData: dataMap, sequenceProvider: sequenceFetcher, accountCounter: 0}
 }
 
-func (data *InMemoryDatabase) BeginTransaction() {
+func (data *inMemoryDatabase) BeginTransaction() {
 }
 
-func (data *InMemoryDatabase) EndTransaction() {
+func (data *inMemoryDatabase) EndTransaction() {
 }
 
-func (data *InMemoryDatabase) RejectTransaction() {
+func (data *inMemoryDatabase) RejectTransaction() {
 }
 
-func (data *InMemoryDatabase) GetAccountByOrder(order int) *AccountEntry {
+func (data *inMemoryDatabase) GetAccountByOrder(order int) *AccountEntry {
 	value := data.orderedData[order]
 	return value
 }
 
-func (data *InMemoryDatabase) GetAccountsCount() int {
+func (data *inMemoryDatabase) GetAccountsCount() int {
 	return len(data.orderedData)
 }
 
 var addAccountRand = rand.New(rand.NewSource(0))
 
 // reservoir sampling of accounts
-func (data *InMemoryDatabase) AddAccount(account *AccountEntry) Database {
+func (data *inMemoryDatabase) AddAccount(account *AccountEntry) Database {
 	if account.SequenceManager == nil {
 		account.SequenceManager = &SequenceInitilizer{account: account, seqProvider: data.sequenceProvider}
 	}
@@ -194,19 +196,7 @@ func (data *InMemoryDatabase) AddAccount(account *AccountEntry) Database {
 	return data
 }
 
-func (data *InMemoryDatabase) GetTrustLineByOrder(ix int) *TrustLineEntry {
-	return data.orderedTrustlines[ix]
-}
-
-func (data *InMemoryDatabase) GetTrustLineCount() int {
-	return len(data.orderedTrustlines)
-}
-
-func (data *InMemoryDatabase) AddTrustLine(trustline *TrustLineEntry) {
-	data.orderedTrustlines = append(data.orderedTrustlines, trustline)
-}
-
-func (data *InMemoryDatabase) GetAccountByAddress(address string) *AccountEntry {
+func (data *inMemoryDatabase) GetAccountByAddress(address string) *AccountEntry {
 	return data.mappedData[address]
 }
 
@@ -258,13 +248,6 @@ func getRandomAccountWithNonZeroSequence(database Database) *AccountEntry {
 	return nil
 }
 
-const (
-	BaseFee          int64 = 100
-	BaseReserve      int64 = 10 * amount.One
-	MinimalBalance   int64 = 2 * BaseReserve
-	MinimalOperation       = BaseFee + MinimalBalance
-)
-
 var txRand = rand.New(rand.NewSource(0))
 var opRand = rand.New(rand.NewSource(0))
 
@@ -299,7 +282,6 @@ func (sampler *TransactionsSampler) Generate(_ uint64, database Database) (*buil
 		Logger.Print("error while getting account's sequence number")
 		return nil, sourceAccount, func(d Database) Database { return d }, func(d Database) Database { return d }
 	}
-
 	seq.Sequence++
 	sourceAccount.SetSequence(seq)
 
